@@ -7,8 +7,13 @@ namespace Zapqio.Runner
 {
     public class Program
     {
-        public static void Main(string[] args)
+        public static async Task<int> Main(string[] args)
         {
+            if (Deployments.WindowsDeploymentCli.IsCommand(args))
+            {
+                return await Deployments.WindowsDeploymentCli.RunAsync(args);
+            }
+
             var builder = Host.CreateApplicationBuilder(args);
             builder.Services.AddWindowsService();
             builder.Services.AddSystemd();
@@ -25,10 +30,12 @@ namespace Zapqio.Runner
                 {
                     s.Token = envKey;
                 }
+
                 if (!string.IsNullOrEmpty(envId))
                 {
                     s.Name = envId;
                 }
+
                 if (string.IsNullOrEmpty(s.Name))
                 {
                     var filePath = Path.Combine(builder.Environment.ContentRootPath, "##Name");
@@ -36,24 +43,29 @@ namespace Zapqio.Runner
                     {
                         s.Name = File.ReadAllText(filePath);
                     }
+
                     if (string.IsNullOrEmpty(s.Name))
                     {
                         s.Name = Guid.NewGuid().ToString();
                         File.WriteAllText(filePath, s.Name);
                     }
                 }
+
                 if (!string.IsNullOrEmpty(envUrl))
                 {
                     s.Url = envUrl;
                 }
+
                 if (int.TryParse(envMaxConcurrency, out var maxConcurrency))
                 {
                     s.MaxConcurrency = maxConcurrency;
                 }
+
                 if (!string.IsNullOrEmpty(envMinLogLevel))
                 {
                     s.MinRemoteLogLevel = envMinLogLevel;
                 }
+
                 s.Normalize();
                 return s;
             });
@@ -66,7 +78,10 @@ namespace Zapqio.Runner
             // w JobLogWriter - to on zna próg wysyłki i przypisanie wpisu do zadania.
             builder.Services.AddSingleton<JobLogWriter>();
             builder.Services.AddSingleton<ScopedConsole>();
-            builder.Services.AddSingleton<MethodsProvider>();
+            builder.Services.AddSingleton(sp => new MethodsProvider(sp.GetRequiredService<ILogger<MethodsProvider>>(),
+                sp.GetRequiredService<JobLogWriter>(), deferred: true));
+            builder.Services.AddSingleton(new Deployments.DeploymentStore(Path.Combine(AppContext.BaseDirectory, "Deployments")));
+            builder.Services.AddSingleton<Deployments.DeploymentCoordinator>();
             builder.Services.AddSingleton<WSClient>();
             builder.Services.AddSingleton<RunnerProcessState>();
             builder.Services.AddSingleton<IOutboundTransport>(sp => sp.GetRequiredService<WSClient>());
@@ -92,6 +107,7 @@ namespace Zapqio.Runner
             // gniazda żyje najdłużej - inaczej wyniki nie miałyby czym wyjść.
             builder.Services.AddHostedService(sp => sp.GetRequiredService<OutboundSender>());
             builder.Services.AddHostedService<JobSchedulerHost>();
+            builder.Services.AddHostedService(sp => sp.GetRequiredService<Deployments.DeploymentCoordinator>());
             builder.Services.AddHostedService<RequestBindBackground>();
 
             // Host ma dać pętli połączenia czas na łagodne zatrzymanie (StopTimeoutSeconds) z zapasem
@@ -101,7 +117,8 @@ namespace Zapqio.Runner
 
             var host = builder.Build();
             PreRun(host).GetAwaiter().GetResult();
-            host.Run();
+            await host.RunAsync();
+            return 0;
 
             static async Task PreRun(IHost host)
             {
@@ -111,6 +128,7 @@ namespace Zapqio.Runner
                 {
                     logLevel = LogEventLevel.Information;
                 }
+
                 var template = "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} {Level:u3} {SourceContext}] {Message:lj}{NewLine}{Exception}";
                 var originalConsoleOut = Console.Out; // Zapisz PRZED utworzeniem ScopedConsole
                 var log = new LoggerConfiguration()
@@ -122,6 +140,7 @@ namespace Zapqio.Runner
                     string fullPath = Path.IsPathRooted(settings.Logger.PathDirectory) ? settings.Logger.PathDirectory : Path.Combine(AppContext.BaseDirectory, settings.Logger.PathDirectory);
                     log.WriteTo.File(Path.Combine(fullPath, ".log"), outputTemplate: template, rollOnFileSizeLimit: true, fileSizeLimitBytes: 200 * 1048576, rollingInterval: RollingInterval.Day);
                 }
+
                 Log.Logger = log.CreateLogger();
 
                 // Statyczny RunnerLog modułów musi mieć gdzie oddawać wpisy, zanim powstanie pierwszy

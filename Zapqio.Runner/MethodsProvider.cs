@@ -9,9 +9,9 @@ namespace Zapqio.Runner
     /// Ładuje moduły z paczek .zip i buduje z nich kontener metod. Jeden na proces (singleton hosta),
     /// bo rejestruje w domenie aplikacji handler rozwiązywania zestawów z paczek współdzielonych.
     /// </summary>
-    public class MethodsProvider : IDisposable
+    public class MethodsProvider : IDisposable, Deployments.IDeploymentModules
     {
-        private readonly IServiceProvider _localServiceProvider;
+        private IServiceProvider _localServiceProvider = null!;
         private readonly ILogger<MethodsProvider> _logger;
         private readonly JobLogWriter _logWriter;
         private readonly DirectoryInfo _dirModules;
@@ -19,7 +19,28 @@ namespace Zapqio.Runner
         private readonly DirectoryInfo? _dirConfig;
         private readonly List<DirectoryInfo> _sharedDirs = new();
         private readonly List<(Type Type, string Module)> _methodTypes = new();
-        private readonly Lazy<IReadOnlyList<IRunnerMethod>> _methods;
+        private Lazy<IReadOnlyList<IRunnerMethod>> _methods = null!;
+        private bool _initialized;
+        private readonly List<string> _loadErrors = new();
+        private IReadOnlyList<Deployments.InstalledModule> _installed = Array.Empty<Deployments.InstalledModule>();
+        private readonly Dictionary<IRunnerMethod, Zapqio.Deployments.ExecutionVersion> _versions = new(ReferenceEqualityComparer.Instance);
+        private readonly Dictionary<string, string> _assemblyHashes = new(StringComparer.OrdinalIgnoreCase);
+        public IReadOnlyList<string> LoadErrors => _loadErrors;
+
+        public Zapqio.Deployments.ExecutionVersion? VersionFor(IRunnerMethod? method) =>
+            method is not null && _versions.TryGetValue(method, out var version) ? version : null;
+
+        public void Load(IReadOnlyList<Deployments.InstalledModule> installed, bool validate)
+        {
+            _installed = installed.Where(i => File.Exists(Path.Combine(_dirModules.FullName, i.Manifest.PackageName + ".zip")) &&
+                Zapqio.Deployments.DeploymentBundle.HashFile(Path.Combine(_dirModules.FullName, i.Manifest.PackageName + ".zip")) == i.ZipSha256).ToList();
+            Initialize();
+            _ = GetMethods().ToList();
+            if (validate && _loadErrors.Count > 0)
+            {
+                throw new InvalidOperationException(string.Join(" | ", _loadErrors.Take(10)));
+            }
+        }
         private bool _disposed;
 
         /// <summary>
@@ -27,8 +48,8 @@ namespace Zapqio.Runner
         /// <c>ILogger</c> wstrzykiwanego do modułów (<see cref="AddModuleLogging"/>); DI podaje go z
         /// kontenera hosta, gdzie jest singletonem wspólnym ze <see cref="ScopedConsole"/>.
         /// </summary>
-        public MethodsProvider(ILogger<MethodsProvider> logger, JobLogWriter logWriter)
-                : this(logger, logWriter, DirModules, DirModulesCache, DirConfig)
+        public MethodsProvider(ILogger<MethodsProvider> logger, JobLogWriter logWriter, bool deferred = false)
+                : this(logger, logWriter, DirModules, DirModulesCache, DirConfig, deferred)
         {
         }
 
@@ -36,13 +57,27 @@ namespace Zapqio.Runner
         /// Wariant z jawnymi katalogami - dla testów. Host używa domyślnych, obok binarki.
         /// <paramref name="config"/> to katalog na konfigurację modułów (runner go tylko zakłada).
         /// </summary>
-        public MethodsProvider(ILogger<MethodsProvider> logger, JobLogWriter logWriter, DirectoryInfo modules, DirectoryInfo cache, DirectoryInfo? config = null)
+        public MethodsProvider(ILogger<MethodsProvider> logger, JobLogWriter logWriter, DirectoryInfo modules, DirectoryInfo cache, DirectoryInfo? config = null, bool deferred = false)
         {
             _logger = logger;
             _logWriter = logWriter ?? throw new ArgumentNullException(nameof(logWriter));
             _dirModules = modules;
             _dirModulesCache = cache;
             _dirConfig = config;
+            if (!deferred)
+            {
+                Initialize();
+            }
+        }
+
+        public void Initialize()
+        {
+            if (_initialized)
+            {
+                return;
+            }
+
+            _initialized = true;
             // Przed pierwszym LoadFrom: skan konsumenta może potrzebować zestawu z paczki współdzielonej
             // już przy GetTypes(), nie dopiero przy wywołaniu metody.
             AppDomain.CurrentDomain.AssemblyResolve += ResolveFromSharedModules;
@@ -81,6 +116,11 @@ namespace Zapqio.Runner
 
         public IEnumerable<IRunnerMethod> GetMethods()
         {
+            if (!_initialized)
+            {
+                throw new InvalidOperationException("Modules are not initialized yet.");
+            }
+
             return _methods.Value;
         }
 
@@ -101,10 +141,35 @@ namespace Zapqio.Runner
             {
                 try
                 {
-                    list.Add((IRunnerMethod)_localServiceProvider.GetRequiredService(type));
+                    var method = (IRunnerMethod)_localServiceProvider.GetRequiredService(type);
+                    var name = method.NameMethod();
+                    if (string.IsNullOrWhiteSpace(name) || list.Any(m => m.NameMethod() == name))
+                    {
+                        throw new InvalidOperationException("Duplicate or empty method name: " + name);
+                    }
+
+                    // Validate metadata now, before Applied/Info, so schema errors roll back the batch.
+                    if (method.InData() is { } input)
+                    {
+                        _ = NJsonSchema.JsonSchema.FromType(input).ToJson();
+                    }
+
+                    if (method.OutData() is { } output)
+                    {
+                        _ = NJsonSchema.JsonSchema.FromType(output).ToJson();
+                    }
+
+                    list.Add(method);
+                    var installed = _installed.SingleOrDefault(i => string.Equals(i.Manifest.PackageName, module, StringComparison.OrdinalIgnoreCase));
+                    if (installed is not null)
+                    {
+                        var m = installed.Manifest;
+                        _versions[method] = new(m.RepositoryId, m.SnapshotId, m.Commit) { DeploymentId = m.DeploymentId };
+                    }
                 }
                 catch (Exception ex)
                 {
+                    _loadErrors.Add($"{module}: {ex.Message}");
                     // Metoda jest wyłączona do restartu; pozostałe działają normalnie.
                     _logger.LogError(ex,
                         "Metoda {Type} z modułu {Module} nie została utworzona i nie będzie ogłoszona: {Reason}",
@@ -120,6 +185,7 @@ namespace Zapqio.Runner
             {
                 return;
             }
+
             _disposed = true;
             AppDomain.CurrentDomain.AssemblyResolve -= ResolveFromSharedModules;
             // Kontener modułów nie jest zwalniany - jak dotąd, moduły żyją do końca procesu.
@@ -155,17 +221,26 @@ namespace Zapqio.Runner
                 {
                     _dirModules.Create();
                 }
+
                 if (!_dirModulesCache.Exists)
                 {
                     _dirModulesCache.Create();
                 }
+
                 if (_dirConfig is { Exists: false })
                 {
                     _dirConfig.Create();
                 }
+
                 // Kolejność jawna, nie z systemu plików (NTFS zwraca alfabetycznie, ext4 nie): to zarazem
                 // kolejność probowania katalogów paczek współdzielonych.
                 zips = _dirModules.EnumerateFiles("*.zip").OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase).ToList();
+                var activeNames = zips.Select(z => Path.GetFileNameWithoutExtension(z.Name)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                foreach (var obsolete in _dirModulesCache.EnumerateDirectories().Where(d => !activeNames.Contains(d.Name)))
+                {
+                    Zapqio.Deployments.DeploymentBundle.RequireRegularPath(obsolete.FullName);
+                    obsolete.Delete(true);
+                }
             }
             catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
             {
@@ -174,6 +249,7 @@ namespace Zapqio.Runner
                 _logger.LogError(ex,
                     "Brak dostępu do katalogu modułów {Dir} albo cache {Cache} dla konta {User} - sprawdź uprawnienia (icacls). Runner startuje bez metod",
                     _dirModules.FullName, _dirModulesCache.FullName, RunningAs);
+                _loadErrors.Add(ex.Message);
                 return dirModules;
             }
 
@@ -182,6 +258,7 @@ namespace Zapqio.Runner
                 _logger.LogWarning("Brak modułów: w {Dir} nie ma żadnej paczki .zip", _dirModules.FullName);
                 return dirModules;
             }
+
             _logger.LogInformation("Znaleziono {Count} paczek modułów: {Zips}", zips.Count, string.Join(", ", zips.Select(z => z.Name)));
 
             foreach (var file in zips)
@@ -189,7 +266,7 @@ namespace Zapqio.Runner
                 try
                 {
                     using var stream = file.OpenRead();
-                    var cacheDir = _dirModulesCache.CreateSubdirectory(file.Name.Replace(file.Extension, string.Empty));
+                    var cacheDir = _dirModulesCache.CreateSubdirectory(Path.GetFileNameWithoutExtension(file.Name));
                     var hashFile = new FileInfo(Path.Combine(cacheDir.FullName, HashFile));
                     stream.Position = 0;
                     var hashZip = SHA256.HashData(stream);
@@ -204,6 +281,7 @@ namespace Zapqio.Runner
                             continue;
                         }
                     }
+
                     cacheDir.Delete(true);
                     ZipFile.ExtractToDirectory(stream, cacheDir.FullName);
                     using var s = hashFile.Create();
@@ -214,6 +292,7 @@ namespace Zapqio.Runner
                 }
                 catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or InvalidDataException)
                 {
+                    _loadErrors.Add($"{file.Name}: {ex.Message}");
                     // Jedna zepsuta albo nieczytelna paczka nie ma blokować pozostałych.
                     _logger.LogError(ex,
                         "Nie udało się przygotować modułu {Zip} (konto: {User}) - pomijam",
@@ -238,13 +317,16 @@ namespace Zapqio.Runner
                     var dll = directoryInfo.GetFiles(dllName).FirstOrDefault();
                     if (dll == null)
                     {
+                        _loadErrors.Add($"{directoryInfo.Name}: missing {dllName}");
                         _logger.LogWarning($"File {dllName} not found in module: {directoryInfo.Name}");
                         continue;
                     }
+
                     listdll.Add(dll);
                 }
                 return (listdll, true);
             }
+
             return (directoryInfo.EnumerateFiles("*.dll").ToList(), false);
         }
 
@@ -260,6 +342,7 @@ namespace Zapqio.Runner
             {
                 return null;
             }
+
             var fileName = new AssemblyName(args.Name).Name + ".dll";
             var requestor = args.RequestingAssembly;
             // Location rzuca dla zestawów dynamicznych.
@@ -271,6 +354,7 @@ namespace Zapqio.Runner
                     return fromOwnDir;
                 }
             }
+
             foreach (var dir in _sharedDirs)
             {
                 var path = Path.Combine(dir.FullName, fileName);
@@ -278,6 +362,7 @@ namespace Zapqio.Runner
                 {
                     continue;
                 }
+
                 if (TryLoad(path) is { } assembly)
                 {
                     _logger.LogDebug("Zestaw {Name} dla {Requestor} rozwiązany z modułu współdzielonego {Module}",
@@ -336,16 +421,34 @@ namespace Zapqio.Runner
                     Assembly assembly;
                     try
                     {
+                        var identity = AssemblyName.GetAssemblyName(dll.FullName).Name!;
+                        var hash = Zapqio.Deployments.DeploymentBundle.HashFile(dll.FullName);
+                        if (_assemblyHashes.TryGetValue(identity, out var existingHash) && existingHash != hash)
+                        {
+                            throw new FileLoadException("Conflicting assembly versions: " + identity);
+                        }
+
+                        _assemblyHashes[identity] = hash;
                         assembly = Assembly.LoadFrom(dll.FullName);
+                        if (!string.IsNullOrEmpty(assembly.Location) && Zapqio.Deployments.DeploymentBundle.HashFile(assembly.Location) != hash)
+                        {
+                            throw new FileLoadException("The process already loaded a different assembly: " + identity);
+                        }
                     }
                     catch (BadImageFormatException)
                     {
+                        if (readIsFile)
+                        {
+                            _loadErrors.Add($"{dir.Name}: {dll.Name} is not a .NET assembly.");
+                        }
+
                         // Natywna biblioteka albo DLL spoza .NET - w paczkach modułów to normalne.
                         _logger.LogDebug("Pomijam {Dll} z modułu {Module}: to nie jest zestaw .NET", dll.Name, dir.Name);
                         continue;
                     }
                     catch (Exception ex) when (ex is FileNotFoundException or FileLoadException or UnauthorizedAccessException)
                     {
+                        _loadErrors.Add($"{dir.Name}: {dll.Name}: {ex.Message}");
                         // Wcześniej połykane bez śladu - a tu ląduje m.in. blokada przez politykę kontroli
                         // aplikacji (WDAC / Smart App Control), brak prawa odczytu dla konta usługi
                         // i inna binarka pod nazwą zestawu, który jest już załadowany z innej paczki.
@@ -362,6 +465,7 @@ namespace Zapqio.Runner
                     }
                     catch (ReflectionTypeLoadException ex)
                     {
+                        _loadErrors.Add($"{dir.Name}: {dll.Name}: {ex.Message}");
                         types = ex.Types.Where(t => t != null).ToArray()!;
                         var reasons = ex.LoaderExceptions
                             .Where(e => e != null)
@@ -385,6 +489,12 @@ namespace Zapqio.Runner
                     }
                     foreach (var type in types) // ładowanie metod
                     {
+                        if (IsPublicConcrete(type) && type.IsAssignableTo(typeof(IRunnerMethod)) &&
+                            _methodTypes.Any(m => m.Type == type && m.Module != dir.Name))
+                        {
+                            _loadErrors.Add($"{dir.Name}: method type {type.FullName} is already provided by another package.");
+                        }
+
                         if (IsPublicConcrete(type) && type.IsAssignableTo(typeof(IRunnerMethod)) && _methodTypes.All(m => m.Type != type))
                         {
                             // Typ będący naraz wstrzyknięciem i metodą jest w kontenerze raz, jako on sam;
@@ -394,6 +504,7 @@ namespace Zapqio.Runner
                             {
                                 buildier.AddSingleton(type);
                             }
+
                             _logger.LogInformation($"Add method: {type.FullName} in module: {dir.Name}");
                             _methodTypes.Add((type, dir.Name));
                             listLoaded.Add(dll.Name);
@@ -416,6 +527,7 @@ namespace Zapqio.Runner
                     }
                     else
                     {
+                        _loadErrors.Add($"{dir.Name}: no methods or injections were loaded.");
                         _logger.LogWarning(
                             "Moduł {Module} nie dostarczył żadnej metody ani wstrzyknięcia (sprawdzono {Count} DLL)",
                             dir.Name, listDll.Count);

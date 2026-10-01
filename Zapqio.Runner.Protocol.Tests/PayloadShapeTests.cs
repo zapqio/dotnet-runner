@@ -32,7 +32,7 @@ public class PayloadShapeTests
         },
         {
             "messageJobReturn",
-            new MessageJobReturn { Id = Guid.NewGuid(), Status = MessageResponseStatus.OK, Data = "{}" }
+            new MessageJobReturn { Id = Guid.NewGuid(), Status = MessageResponseStatus.OK, Data = "{}", ExecutionVersion = new(Guid.NewGuid(), Guid.NewGuid(), new string('a', 40)) }
         },
         {
             "messageLog",
@@ -41,6 +41,7 @@ public class PayloadShapeTests
                 JobId = Guid.NewGuid(),
                 Level = MessageLogLevel.Info,
                 Message = "hello",
+                ExecutionVersion = new(Guid.NewGuid(), Guid.NewGuid(), new string('a', 40)),
                 Date = DateTimeOffset.UtcNow,
             }
         },

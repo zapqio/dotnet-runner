@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 #Requires -RunAsAdministrator
 
 <#
@@ -257,7 +257,7 @@ try {
 
     # Stare pliki sprzątamy tylko wtedy, gdy katalog na pewno jest instalacją runnera
     if (Test-Path $exePath) {
-        $preserve = 'appsettings.json', '##Name', 'Modules', 'Logs'
+        $preserve = 'appsettings.json', '##Name', '##ServiceName', 'Modules', 'Logs', 'Config', 'Deployments'
         Get-ChildItem -Path $InstallDir -Force |
             Where-Object { $_.Name -notin $preserve } |
             Remove-Item -Recurse -Force
@@ -458,6 +458,21 @@ try {
     # Konfiguracja modułów (Config\<moduł>.json) - moduły trzymają tam hasła do swoich systemów, więc ACL
     # jak na appsettings.json z tokenem. Konto usługi dostaje Modify, bo moduł zakłada plik przy pierwszym
     # starcie; inni użytkownicy maszyny nie czytają. Runner zakłada katalog sam, tu tylko uprawnienia.
+    [System.IO.File]::WriteAllText((Join-Path $InstallDir '##ServiceName'), $ServiceName)
+    $deploymentDir = Join-Path $InstallDir 'Deployments'
+    New-Item -ItemType Directory -Path $deploymentDir -Force | Out-Null
+    $deploymentGrants = @('*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F')
+    if (-not $LocalSystem)
+    {
+        $deploymentGrants += "NT SERVICE\${ServiceName}:(OI)(CI)M"
+    }
+
+    & icacls $deploymentDir /inheritance:r /grant:r $deploymentGrants | Out-Null
+    if ($LASTEXITCODE -ne 0)
+    {
+        throw "icacls na $deploymentDir zakończyło się kodem $LASTEXITCODE."
+    }
+
     $configDir = Join-Path $InstallDir 'Config'
     if (-not (Test-Path $configDir)) { New-Item -ItemType Directory -Path $configDir | Out-Null }
     $configGrants = @('*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F')

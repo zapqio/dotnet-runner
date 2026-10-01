@@ -1,4 +1,4 @@
-﻿namespace Zapqio.Runner.Protocol.Enums
+namespace Zapqio.Runner.Protocol.Enums
 {
     public enum MessageType
     {
@@ -7,6 +7,11 @@
         JobAccepted,
         JobReturn,
         Log,
-        Info
+        Info,
+        Deployment,
+        DeploymentApproval,
+        DeploymentApprovalResult,
+        DeploymentStatus,
+        DeploymentStatusAck
     }
 }

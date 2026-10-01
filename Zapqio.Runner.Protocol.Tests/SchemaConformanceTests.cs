@@ -17,6 +17,11 @@ public class SchemaConformanceTests
     private static string PayloadDef(string type) => type switch
     {
         "Info" => "messageInfo",
+        "Deployment" => "deploymentNotice",
+        "DeploymentApproval" => "deploymentApproval",
+        "DeploymentApprovalResult" => "deploymentApprovalResult",
+        "DeploymentStatus" => "deploymentReport",
+        "DeploymentStatusAck" => "deploymentStatusAck",
         "Job" => "messageJob",
         "JobAccepted" => "messageJobAccepted",
         "JobReturn" => "messageJobReturn",

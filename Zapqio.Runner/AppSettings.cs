@@ -8,6 +8,12 @@ namespace Zapqio.Runner
         public string Url { get; set; }
 
         /// <summary>
+        /// Maksymalny rozmiar całej odbieranej wiadomości WebSocket w bajtach UTF-8.
+        /// Ustaw tę samą wartość w platformie. Zmiana wymaga restartu aplikacji.
+        /// </summary>
+        public int MaxWebSocketMessageBytes { get; set; } = 32 * 1024 * 1024;
+
+        /// <summary>
         /// Ile zadań runner wykonuje naraz. Domyślnie 1, czyli dotychczasowe zachowanie: jedno po
         /// drugim. Wyższa wartość ma sens wyłącznie dla modułów gotowych na równoległe wywołania
         /// <c>Run</c> (także tej samej metody na tej samej instancji) - runner nie dodaje żadnej
@@ -60,7 +66,16 @@ namespace Zapqio.Runner
         /// <summary>Sprowadza wartości bez sensu do dopuszczalnych; wołane raz, po zbudowaniu ustawień.</summary>
         public void Normalize()
         {
-            if (MaxConcurrency < 1) MaxConcurrency = 1;
+            if (MaxWebSocketMessageBytes <= 0)
+            {
+                throw new InvalidOperationException("MaxWebSocketMessageBytes must be greater than zero.");
+            }
+
+            if (MaxConcurrency < 1)
+            {
+                MaxConcurrency = 1;
+            }
+
             if (StopTimeoutSeconds < 0) StopTimeoutSeconds = 0;
             if (MaxQueuedLogLines < 100) MaxQueuedLogLines = 100;
 

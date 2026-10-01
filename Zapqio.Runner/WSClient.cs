@@ -73,17 +73,26 @@ namespace Zapqio.Runner
         {
             try
             {
-                if (client == null) throw new ArgumentNullException(nameof(client));
-                if (settings == null) throw new ArgumentNullException(nameof(settings));
+                if (client == null)
+                {
+                    throw new ArgumentNullException(nameof(client));
+                }
+
+                if (settings == null)
+                {
+                    throw new ArgumentNullException(nameof(settings));
+                }
 
                 if (!string.IsNullOrEmpty(settings.Token))
                 {
                     client.Options.SetRequestHeader("X-Zapqio-Token", settings.Token);
                 }
+
                 if (!string.IsNullOrEmpty(settings.Name))
                 {
                     client.Options.SetRequestHeader("X-Zapqio-Name", settings.Name);
                 }
+
                 client.Options.SetRequestHeader(ProtocolVersion.Header, ProtocolVersion.Current.ToString());
                 client.Options.SetRequestHeader(MessageInfo.ProcessInstanceHeader, _process.InstanceId.ToString());
 
@@ -106,6 +115,7 @@ namespace Zapqio.Runner
                 {
                     return ConnectResult.Ok();
                 }
+
                 if (_client.State != WebSocketState.None)
                 {
                     _logger.LogInformation("Reconnecting WebSocket");
@@ -192,14 +202,18 @@ namespace Zapqio.Runner
         {
             var headers = _client.HttpResponseHeaders;
             if (headers is null)
+            {
                 return null;
+            }
 
             var raw = headers
                 .FirstOrDefault(h => string.Equals(h.Key, "Retry-After", StringComparison.OrdinalIgnoreCase))
                 .Value?.FirstOrDefault();
 
             if (!int.TryParse(raw, out var seconds) || seconds < 0)
+            {
                 return null;
+            }
 
             return TimeSpan.FromSeconds(Math.Min(seconds, MaxRetryAfterSeconds));
         }
@@ -228,6 +242,7 @@ namespace Zapqio.Runner
                     //nic nie poszło w gniazdo, więc to nie jest sukces - inaczej wołający uzna, że platforma dostała wiadomość
                     return false;
                 }
+
                 return true;
             }
             catch (OperationCanceledException)
@@ -253,6 +268,8 @@ namespace Zapqio.Runner
         }
 
         /// <summary>Odpytanie o zadanie: „mam wolne miejsce". Wyślij i zapomnij - platforma i tak sama rozsyła co obrót.</summary>
+        public void SendDeployment(MessageType type, object payload) => _outbox.Enqueue(Outbox.Frame(type, payload));
+
         public Task SendQueryOnJob()
         {
             _outbox.Enqueue(Outbox.Frame(MessageType.Job, null));
@@ -274,14 +291,15 @@ namespace Zapqio.Runner
         }
 
         /// <summary>Wynik zadania: numer sekwencji zapisu albo <c>null</c>, gdy nie wyszedł (patrz <see cref="PendingJobReturns"/>).</summary>
-        public Task<long?> SendJobReturn(Guid Id, Guid attemptId, MessageResponseStatus status, string data)
+        public Task<long?> SendJobReturn(Guid Id, Guid attemptId, MessageResponseStatus status, string data, Zapqio.Deployments.ExecutionVersion? executionVersion = null)
         {
             var m = new MessageJobReturn
             {
                 Data = data,
                 Id = Id,
                 AttemptId = attemptId,
-                Status = status
+                Status = status,
+                ExecutionVersion = executionVersion
             };
             return _outbox.SendAndWaitAsync(Outbox.Frame(MessageType.JobReturn, m));
         }
@@ -352,9 +370,14 @@ namespace Zapqio.Runner
         {
             var client = _client;
             if (client is null)
+            {
                 return;
+            }
+
             if (client.State != WebSocketState.Open && client.State != WebSocketState.CloseReceived)
+            {
                 return;
+            }
 
             try
             {

@@ -283,3 +283,73 @@ Wersję zainstalowanej binarki sprawdzisz przez:
 | W logu zadania `Not found method: <nazwa>` | Web kieruje zadanie po nazwie z `NameMethod()`. Moduł nie został załadowany (restart po dorzuceniu paczki) albo nazwa metody rozjechała się z tą użytą w pipeline. |
 | `Failed to send JobReturn ... the result of this job was lost` | Połączenie padło między odebraniem zadania a odesłaniem wyniku; Web zamknie takie zadanie jako osierocone. Przy dużych wynikach sprawdź limit 32 MiB na wiadomość — jego przekroczenie zamyka połączenie kodem WS `1009`. |
 | Konfiguracja ignorowana przy ręcznym uruchomieniu | `appsettings.json` jest czytany z katalogu roboczego — uruchamiaj binarkę po `cd C:\zapqio\runner`. Trybu usługi to nie dotyczy. |
+
+## Wdrożenia SR3 na Windows
+
+Paczki z platformy wymagają zgody administratora maszyny. Zaktualizuj runner oraz
+`install.ps1`: instalator zachowuje `Config`, `Modules`, `Deployments`, `Logs`,
+`appsettings.json` i tożsamość maszyny. Zapisuje `##ServiceName` z rzeczywistą nazwą
+usługi oraz ogranicza dostęp do poczekalni do administratorów, SYSTEM i konta usługi.
+Nie zmieniaj nazwy usługi ręcznie w tym pliku. Istniejące moduły przenosi administrator;
+SR3 nie importuje ich automatycznie do repozytoriów platformy.
+
+W podniesionym terminalu, w katalogu instalacji:
+
+```powershell
+.\Zapqio.Runner.exe deploy list
+.\Zapqio.Runner.exe deploy show <deployment-id>
+.\Zapqio.Runner.exe deploy approve <deployment-id>
+.\Zapqio.Runner.exe deploy approve --all
+.\Zapqio.Runner.exe deploy reject <deployment-id>
+```
+
+Alias podkomendy: `deployments`. `show` pokazuje manifest, commit, autora, wiadomość,
+sumy kontrolne i zmienione pliki względem aktualnie zainstalowanego manifestu.
+`list`, `show`, pobranie i `reject` nie tworzą hosta ani nie uruchamiają nowego kodu.
+CLI korzysta z trwałego dziennika `Deployments/state.json`; paczki leżą w `bundles/`.
+
+`approve` wybiera konkretne ID i hashe, a działająca usługa przesyła tę listę do Weba.
+Web sprawdza aktualność całego zestawu i zapisuje zgodę. Dopiero jego potwierdzenie
+pozwala zrestartować usługę. Restart przerywa trwające zadania bez oczekiwania na
+ich zakończenie. Brak ACK nie pozwala na instalację; po 60 sekundach CLI kończy
+oczekiwanie, ale zapisane żądanie pozostaje i jest ponawiane po odzyskaniu łączności.
+Oznacza to, że zaakceptowane później żądanie może zrestartować usługę po wyjściu z CLI.
+Stan żądania sprawdzisz przez `list`. Odmowa Weba nie zatwierdza automatycznie nowszej paczki.
+
+Po restarcie gotowe ZIP-y są walidowane, źródła budowane, a następnie podmieniany jest
+cały wybrany zestaw. `Applied` jest wysyłane po załadowaniu modułów i walidacji ich metod.
+Przy błędzie dowolnego modułu przywracany jest cały poprzedni zestaw; po próbie ładowania
+DLL następuje dodatkowy restart do świeżego procesu. Dziennik odtwarza również instalację
+przerwaną awarią procesu. Kopie wycofania są tymczasowe; nie są historią wersji do uruchamiania.
+Cofnięcie plików nie cofa skutków ubocznych konstruktora ani targetów budowania.
+
+Nowsza wysyłka zastępuje wcześniejszą niezatwierdzoną pozycję tego samego repozytorium.
+Po zgodzie jej ID/hash pozostają niezmienne. Powrót do starszego commita i usunięcie
+modułu (`Withdraw`) są kolejnymi operacjami wymagającymi zgody. `Config` pozostaje.
+Statusy są ponawiane do potwierdzenia przez Web. Problemy helpera restartu trafiają do
+`Deployments/restart.log`; pozostałe błędy do zwykłego logu runnera i historii wdrożeń.
+
+### Źródła i artefakty CI
+
+- `Runner`: dokładny commit jest dostarczany jako źródła. Dopiero po ACK uruchamiane
+  jest lokalne `dotnet publish <projekt> -c Release -o <katalog roboczy>/output/publish`.
+  Potrzebny jest SDK zgodny z `global.json`/projektem i lokalna konfiguracja NuGet.
+  Limit budowania wynosi 10 minut; po przekroczeniu kończone jest drzewo procesu.
+  Projekt może utworzyć jeden ZIP obok `PublishDir` przez `ZipAfterPublish` z przykładu
+  powyżej. Alternatywnie zawartość publish musi mieć poprawne `##Dll`/`##Shared`.
+- `CiZip`: SDK na runnerze nie jest potrzebny. Platforma pobiera gotowy artefakt dla
+  dokładnego commita. Na GitHub artefakt nazywa się `zapqio-module` i pochodzi z udanego
+  workflow. Na GitLab udany job `zapqio-module` należy do udanego pipeline tego commita.
+  Archiwum artefaktu zawiera dokładnie plik `module.zip` w korzeniu; to właściwa paczka
+  modułu z `##Dll` i opcjonalnym `##Shared`. Wygasły lub brakujący artefakt daje błąd,
+  bez automatycznego przełączania na kompilację źródeł. Wyszukiwanie jest ograniczone
+  do 2000 artefaktów GitHub lub 2000 pipeline GitLab (do 2000 jobów na pipeline).
+
+Paczka transportowa, payload i pliki mają niezależne sumy SHA-256 oraz limity.
+Token repozytorium pozostaje na platformie. Runner pobiera tylko z adresu instancji,
+z zachowaniem prefiksu URL, używając swojej istniejącej nazwy i tokenu.
+
+Wersja repozytorium/migawki/commita jest przypisana do faktycznie wybranej metody
+przy rozpoczęciu próby i jedzie w logu startowym oraz wyniku, także po reconnect.
+Paczka B czekająca na akceptację nie zmienia wersji A już załadowanej w procesie.
+Moduły instalowane ręcznie nie otrzymują zgadywanej wersji repozytorium.

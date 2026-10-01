@@ -34,6 +34,7 @@ namespace Zapqio.Runner
         public async Task Exec(MessageJob message)
         {
             var method = _methodsProvider.GetMethod(message.Name);
+            var version = _methodsProvider.VersionFor(method);
             bool status = true;
             string outData = null;
             if (method == null)
@@ -62,6 +63,7 @@ namespace Zapqio.Runner
                         Level = MessageLogLevel.Info,
                         JobId = message.Id,
                         AttemptId = message.AttemptId,
+                        ExecutionVersion = version,
                         Message = $"Run Job: {DateTimeOffset.Now:s}"
                     });
                     if (!started)
@@ -103,11 +105,12 @@ namespace Zapqio.Runner
             {
                 Id = message.Id,
                 AttemptId = message.AttemptId,
+                ExecutionVersion = version,
                 Status = status ? MessageResponseStatus.OK : MessageResponseStatus.ERROR,
                 Data = status ? outData : null
             };
 
-            var sentSeq = await _client.SendJobReturn(result.Id, result.AttemptId, result.Status, result.Data);
+            var sentSeq = await _client.SendJobReturn(result.Id, result.AttemptId, result.Status, result.Data, result.ExecutionVersion);
             if (sentSeq is { } seq)
             {
                 // Poszło, ale bez potwierdzenia: zostaje do ponowienia, gdyby połączenie okazało się

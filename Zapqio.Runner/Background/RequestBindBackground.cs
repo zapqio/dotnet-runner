@@ -21,6 +21,7 @@ namespace Zapqio.Runner.Background
         private readonly Outbox _outbox;
         private readonly OutboundSender _sender;
         private readonly AppSettings _settings;
+        private readonly Deployments.DeploymentCoordinator? _deployments;
         private bool _runMethodFirstConnected = false;
 
         /// <summary>Ustawiane w <see cref="StopAsync"/>, zanim host anuluje pętlę - żeby po zamknięciu gniazda nie próbowała się łączyć na nowo.</summary>
@@ -48,7 +49,7 @@ namespace Zapqio.Runner.Background
             JobScheduler scheduler,
             Outbox outbox,
             OutboundSender sender,
-            AppSettings settings)
+            AppSettings settings, Deployments.DeploymentCoordinator? deployments = null)
         {
             _client = client;
             _logger = logger;
@@ -57,6 +58,7 @@ namespace Zapqio.Runner.Background
             _outbox = outbox;
             _sender = sender;
             _settings = settings;
+            _deployments = deployments;
         }
 
         /// <summary>
@@ -77,7 +79,7 @@ namespace Zapqio.Runner.Background
             _stopping = true;
             _scheduler.CompleteAdding();
 
-            var timeout = TimeSpan.FromSeconds(_settings.StopTimeoutSeconds);
+            var timeout = TimeSpan.FromSeconds(_deployments?.RestartRequested == true ? 0 : _settings.StopTimeoutSeconds);
             if (_scheduler.Running > 0)
             {
                 _logger.LogInformation(
@@ -102,14 +104,23 @@ namespace Zapqio.Runner.Background
         {
             var deadline = DateTime.UtcNow + timeout;
             while (!_sender.IsDrained && _client.Connected() && DateTime.UtcNow < deadline)
+            {
                 await Task.Delay(100);
+            }
 
             if (!_sender.IsDrained)
+            {
                 _logger.LogWarning("Zatrzymywanie: kolejka wyjściowa nie została opróżniona - część wiadomości do platformy przepada");
+            }
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
+            if (_deployments is not null)
+            {
+                await _deployments.Ready.WaitAsync(stoppingToken);
+            }
+
             while (!stoppingToken.IsCancellationRequested && !_stopping)
             {
                 try
@@ -117,34 +128,51 @@ namespace Zapqio.Runner.Background
                     var connect = await _client.Connect();
                     if (!connect.Connected)
                     {
+                        _deployments?.Disconnected();
                         await DelayBeforeReconnectAsync(connect, stoppingToken);
                         continue;
                     }
+
                     _failedConnects = 0;
-                    if (connect.Established) _runMethodFirstConnected = false;
+                    if (connect.Established)
+                    {
+                        _runMethodFirstConnected = false;
+                    }
+
                     await FirstConnectedAsync();
                     if (!_runMethodFirstConnected)
                     {
                         await _client.CloseAsync(stoppingToken);
                         continue;
                     }
+
                     // Tylko po faktycznym powrocie: Connect() w zwykłym obrocie pętli zastaje gniazdo
                     // otwarte i nic nie nawiązuje, a wynik wysłany chwilę temu nie jest do ponowienia.
                     if (connect.Established)
                     {
+                        _deployments?.Connected();
                         await ResendPendingResultsAsync();
 
                         // Runner po powrocie ma wolne sloty - zgłasza gotowość od razu, zamiast czekać
                         // na najbliższy obrót dyspozytora po stronie platformy.
                         if (_scheduler.FreeSlots > 0)
+                        {
                             await _client.SendQueryOnJob();
+                        }
                     }
+
                     WebSocketReceiveResult result;
                     using var ms = new MemoryStream();
                     var buff = new byte[1024];
                     do
                     {
                         result = await _client.ReceiveAsync(buff, stoppingToken);
+                        if (ms.Length + result.Count > _settings.MaxWebSocketMessageBytes)
+                        {
+                            await _client.CloseAsync(stoppingToken);
+                            throw new InvalidDataException($"WebSocket message exceeds {_settings.MaxWebSocketMessageBytes} bytes.");
+                        }
+
                         ms.Write(buff, 0, result.Count);
                     } while (!result.EndOfMessage);
 
@@ -154,11 +182,16 @@ namespace Zapqio.Runner.Background
                         // już nie ma nic do zrobienia), albo serwer zamyka pierwszy: dopowiadamy
                         // uzgodnienie, a kolejny obrót pętli łączy się na nowo.
                         if (_stopping)
+                        {
                             _logger.LogDebug("Platforma potwierdziła zamknięcie ({Status})", result.CloseStatus);
+                        }
                         else
+                        {
                             _logger.LogInformation(
-                                "Platforma zamknęła połączenie ({Status}: {Description})",
-                                result.CloseStatus, result.CloseStatusDescription);
+                                                            "Platforma zamknęła połączenie ({Status}: {Description})",
+                                                            result.CloseStatus, result.CloseStatusDescription);
+                        }
+
                         await _client.CloseAsync(stoppingToken);
                         continue;
                     }
@@ -169,7 +202,11 @@ namespace Zapqio.Runner.Background
 
                     // Cokolwiek przyszło od platformy dowodzi, że połączenie żyło po wysyłkach o
                     // niższym numerze sekwencji - te wyniki nie są już do ponawiania (patrz PendingJobReturns).
-                    _pending.Confirm(_outbox.NextSeq());
+                    // Deployment ACKs/notices do not acknowledge job results.
+                    if (message?.Type == MessageType.Job)
+                    {
+                        _pending.Confirm(_outbox.NextSeq());
+                    }
 
                     if (message != null)
                     {
@@ -208,7 +245,9 @@ namespace Zapqio.Runner.Background
                 BaseLoopErrorDelay.TotalMilliseconds * Math.Pow(2, _loopErrors - 1),
                 MaxLoopErrorDelay.TotalMilliseconds);
 
-            await Task.Delay(TimeSpan.FromMilliseconds(delay), stoppingToken).ContinueWith(x => { });
+            await Task.Delay(TimeSpan.FromMilliseconds(delay), stoppingToken).ContinueWith(x =>
+            {
+            });
         }
 
         /// <summary>
@@ -241,7 +280,9 @@ namespace Zapqio.Runner.Background
                 "Kolejna próba połączenia za {Delay:0.#}s (nieudanych z rzędu: {Failed})",
                 delay.TotalSeconds, _failedConnects);
 
-            await Task.Delay(delay, stoppingToken).ContinueWith(x => { });
+            await Task.Delay(delay, stoppingToken).ContinueWith(x =>
+            {
+            });
         }
 
         private async Task FirstConnectedAsync()
@@ -250,6 +291,7 @@ namespace Zapqio.Runner.Background
             {
                 return;
             }
+
             _runMethodFirstConnected = await _client.SendInfo();
         }
 
@@ -272,7 +314,7 @@ namespace Zapqio.Runner.Background
                     "Ponawiam JobReturn ({Status}) zadania {JobId}, próba {AttemptId}, po ponownym połączeniu",
                     result.Status, result.Id, result.AttemptId);
 
-                var sentSeq = await _client.SendJobReturn(result.Id, result.AttemptId, result.Status, result.Data);
+                var sentSeq = await _client.SendJobReturn(result.Id, result.AttemptId, result.Status, result.Data, result.ExecutionVersion);
                 if (sentSeq is null)
                 {
                     _logger.LogWarning("Ponowienie JobReturn zadania {JobId} nie powiodło się - zostaje na kolejne połączenie", result.Id);
@@ -288,6 +330,11 @@ namespace Zapqio.Runner.Background
             {
                 case MessageType.Job:
                     HandleJob(message);
+                    break;
+                case MessageType.Deployment:
+                case MessageType.DeploymentApprovalResult:
+                case MessageType.DeploymentStatusAck:
+                    _deployments?.Handle(message);
                     break;
                 default:
                     break;
