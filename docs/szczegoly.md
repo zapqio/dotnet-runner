@@ -1,4 +1,4 @@
-# Zapqio Runner — szczegóły
+﻿# Zapqio Runner — szczegóły
 
 Uzupełnienie głównego [README](../README.md): wymagania, instalacja i odinstalowanie są tam,
 tutaj tematy eksploatacyjne — konfiguracja, moduły, zarządzanie usługą, logi, aktualizacja
@@ -106,6 +106,9 @@ starcie), nikt inny nie czyta. W kodzie modułu ścieżka to `Path.Combine(AppCo
 
 #### Jak zbudować paczkę modułu
 
+Core `1.2.0` jest dostępny na nuget.org; nie trzeba budować lokalnej paczki z repozytorium runnera.
+Do kompilacji potrzebne jest .NET SDK zgodne z projektem i dostęp do nuget.org.
+
 Biblioteka klas z jedną paczką NuGet i targetem, który po `dotnet publish -c Release` pakuje katalog
 publish do zipa (zip ląduje obok katalogu `publish`):
 
@@ -119,7 +122,7 @@ publish do zipa (zip ląduje obok katalogu `publish`):
 
   <ItemGroup>
     <!-- Kontrakt tylko do kompilacji: w runtime dostarcza go runner, kopia DLL w zipie jest zbędna -->
-    <PackageReference Include="Zapqio.Runner.Module.Core" Version="1.0.0" ExcludeAssets="runtime" />
+    <PackageReference Include="Zapqio.Runner.Module.Core" Version="1.2.0" ExcludeAssets="runtime" />
   </ItemGroup>
 
   <Target Name="ZipAfterPublish" AfterTargets="Publish">
@@ -259,6 +262,8 @@ Z katalogu instalacji **zachowaj** (skrypt robi to sam):
 - `##Name` — tożsamość runnera. Skasowany, wygeneruje się od nowa jako inny UUID, a Web odrzuci
   połączenie kodem `401`, bo nazwa jest trwale związana z tokenem,
 - `Modules\` — paczki modułów,
+- `Build\` — SDK i cache kompilacji,
+- `Deployments\` i `Config\` — wdrożenia oraz konfiguracja,
 - `Logs\` — jeśli zależy Ci na historii.
 
 `.modulesCache\` można skasować — odtworzy się przy starcie z paczek w `Modules\`.
@@ -287,7 +292,7 @@ Wersję zainstalowanej binarki sprawdzisz przez:
 ## Wdrożenia SR3 na Windows
 
 Paczki z platformy wymagają zgody administratora maszyny. Zaktualizuj runner oraz
-`install.ps1`: instalator zachowuje `Config`, `Modules`, `Deployments`, `Logs`,
+`install.ps1`: instalator zachowuje `Config`, `Modules`, `Deployments`, `Build`, `Logs`,
 `appsettings.json` i tożsamość maszyny. Zapisuje `##ServiceName` z rzeczywistą nazwą
 usługi oraz ogranicza dostęp do poczekalni do administratorów, SYSTEM i konta usługi.
 Nie zmieniaj nazwy usługi ręcznie w tym pliku. Istniejące moduły przenosi administrator;

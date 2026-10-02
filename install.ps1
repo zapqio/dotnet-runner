@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 #Requires -RunAsAdministrator
 
 <#
@@ -20,7 +20,7 @@
 
     Uruchomiony na istniejącej instalacji działa jak aktualizacja: zatrzymuje
     usługę, podmienia pliki i zachowuje appsettings.json, ##Name, Modules\
-    oraz Logs\ (kasuje .modulesCache — odtworzy się przy starcie).
+    oraz Logs\, Config\, Deployments\ i Build\ (kasuje .modulesCache — odtworzy się przy starcie).
 
 .PARAMETER Version
     Wersja release'u, np. 0.1.1. Pusta = najnowszy release z GitHuba.
@@ -257,7 +257,7 @@ try {
 
     # Stare pliki sprzątamy tylko wtedy, gdy katalog na pewno jest instalacją runnera
     if (Test-Path $exePath) {
-        $preserve = 'appsettings.json', '##Name', '##ServiceName', 'Modules', 'Logs', 'Config', 'Deployments'
+        $preserve = 'appsettings.json', '##Name', '##ServiceName', 'Modules', 'Logs', 'Config', 'Deployments', 'Build'
         Get-ChildItem -Path $InstallDir -Force |
             Where-Object { $_.Name -notin $preserve } |
             Remove-Item -Recurse -Force
