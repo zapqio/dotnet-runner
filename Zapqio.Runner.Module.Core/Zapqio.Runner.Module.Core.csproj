@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
@@ -20,9 +20,10 @@
     <Description>Core interfaces for creating Zapqio Runner modules. Implement IRunnerMethod to create pipeline methods and IRunnerInjection for dependency injection; use RunnerLog for levelled job logging and JobContext for per-job identifiers.</Description>
     <PackageTags>zapqio;runner;pipeline;automation</PackageTags>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
-    <!--<PackageProjectUrl>https://github.com/zapqio/zapqio</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/zapqio/zapqio</RepositoryUrl>
-    <RepositoryType>git</RepositoryType>-->
+    <PackageProjectUrl>https://github.com/zapqio/dotnet-runner</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/zapqio/dotnet-runner</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>NUGET.md</PackageReadmeFile>
 
     <!-- Generate NuGet package on build -->
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
@@ -31,5 +32,10 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="LICENSE" Pack="true" PackagePath="/" />
+    <None Include="NUGET.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
 
 </Project>
