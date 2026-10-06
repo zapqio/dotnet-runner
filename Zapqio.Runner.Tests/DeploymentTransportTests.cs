@@ -140,8 +140,8 @@ public sealed class DeploymentTransportTests
             BundleUrl = $"runner/deployments/{manifest.DeploymentId}/bundle",
             BundleSha256 = DeploymentBundle.Hash(bytes),
             BundleBytes = bytes.Length,
-            MaxBytes = 100000,
-            MaxFiles = 20
+            MaxBytes = long.MaxValue - DeploymentBundle.MetadataLimit,
+            MaxFiles = int.MaxValue
         };
         var damaged = notice with
         {

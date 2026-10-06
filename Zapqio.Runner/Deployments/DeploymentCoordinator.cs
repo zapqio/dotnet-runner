@@ -198,7 +198,7 @@ public sealed class DeploymentCoordinator(DeploymentStore store, MethodsProvider
 
         var expected = $"runner/deployments/{notice.DeploymentId}/bundle";
         if (notice.BundleUrl != expected || !DeploymentBundle.IsHash(notice.BundleSha256) ||
-            notice.MaxBytes is < 1024 or > int.MaxValue || notice.MaxFiles is < 1 or > 100000 ||
+            notice.MaxBytes < 1024 || notice.MaxBytes > long.MaxValue - DeploymentBundle.MetadataLimit || notice.MaxFiles < 1 ||
             notice.BundleBytes < 1 || notice.BundleBytes > notice.MaxBytes + DeploymentBundle.MetadataLimit)
         {
             throw new InvalidDataException("Invalid deployment download notice.");

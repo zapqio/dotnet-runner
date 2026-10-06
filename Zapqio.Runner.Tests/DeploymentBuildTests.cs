@@ -69,8 +69,8 @@ public sealed class DeploymentBuildTests
             BundleUrl = "bundle",
             BundleSha256 = DeploymentBundle.Hash(bytes),
             BundleBytes = bytes.Length,
-            MaxBytes = 10000000,
-            MaxFiles = 100
+            MaxBytes = long.MaxValue - DeploymentBundle.MetadataLimit,
+            MaxFiles = int.MaxValue
         };
         store.Observe(notice);
         store.Receive(notice, bytes);
