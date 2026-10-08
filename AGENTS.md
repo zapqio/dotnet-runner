@@ -11,3 +11,7 @@
 - Never create .playwright-mcp directories or browser automation snapshots, screenshots, traces, or logs inside repositories. Use absolute output paths in the Windows temporary directory, such as %TEMP%\codex-playwright.
 - Do not pass repository-relative filenames to browser tools. Before browser automation, ensure the active server writes its automatic output outside the repository.
 - After changing MCP output settings, reload or restart the server before further browser actions; do not reuse a server that still has the previous repository output settings.
+
+## Plans
+
+- Keep implementation plans and AI analyses in the `ai_analysis/` directory, not in the repository root.

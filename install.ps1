@@ -103,12 +103,12 @@
 
     Interaktywnie — skrypt dopyta o nazwę instancji i token:
 
-      $s = irm https://raw.githubusercontent.com/zapqio/runner-dotnet/main/install.ps1
+      $s = irm https://raw.githubusercontent.com/zapqio/dotnet-runner/main/install.ps1
       & ([scriptblock]::Create($s.TrimStart([char]0xFEFF)))
 
     Z parametrami:
 
-      $s = irm https://raw.githubusercontent.com/zapqio/runner-dotnet/main/install.ps1
+      $s = irm https://raw.githubusercontent.com/zapqio/dotnet-runner/main/install.ps1
       & ([scriptblock]::Create($s.TrimStart([char]0xFEFF))) -Instance test -Token <token>
 #>
 
@@ -131,7 +131,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$repo = 'zapqio/runner-dotnet'
+$repo = 'zapqio/dotnet-runner'
 $baseUrl = 'wss://app.zapq.io'
 
 if ($Instance) {

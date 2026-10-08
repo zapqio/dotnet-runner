@@ -22,7 +22,7 @@ Use `RunnerLog` for job logging and `JobContext.Current` for the job ID, attempt
 and method name during execution. Treat method instances and injected services as
 shared: concurrent jobs may call them at the same time.
 
-See the [module documentation](https://github.com/zapqio/dotnet-runner/blob/main/docs/szczegoly.md)
+See the [module documentation](https://github.com/zapqio/dotnet-runner/blob/main/docs/moduly.md)
 for packaging and deployment.
 
 ## License
