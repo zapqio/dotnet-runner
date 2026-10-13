@@ -13,6 +13,8 @@
     NT SERVICE\<usługa> z prawem zapisu ograniczonym do katalogu instalacji
     (chyba że podano -LocalSystem).
 
+    Na początku pozwala wybrać język instalacji: polski, angielski lub niemiecki.
+    Parametr -Language pomija wybór interaktywny.
     O brakującą nazwę instancji i token pyta interaktywnie; przy nowej instalacji
     pyta też o liczbę równoczesnych zadań. Zapisuje konfigurację w appsettings.json,
     a po starcie usługi czeka, aż w logu pojawi się
@@ -75,8 +77,17 @@
     bibliotek InsERT-a (InsERT.Moria.Sfera i pokrewne), które loader odrzuca
     od .NET 9. Bez takich modułów wybierz -Net10.
 
+.PARAMETER Language
+    Język komunikatów instalatora: pl (polski), en (angielski), de (niemiecki).
+    Bez parametru skrypt pyta o język; Enter wybiera polski. Gdy host nie pozwala
+    na odczyt z konsoli (np. -NonInteractive), również używa polskiego.
+    W automatyzacji podaj język jawnie, aby pominąć pytanie.
+
 .EXAMPLE
     .\install.ps1 -Instance test -Token <token>
+
+.EXAMPLE
+    .\install.ps1 -Language en -Instance test -Token <token>
 
 .EXAMPLE
     .\install.ps1 -Instance test -Token <token> -MaxConcurrency 15
@@ -127,23 +138,256 @@ param(
     [string]$LogLevel,
     [string]$LogDirectory,
     [switch]$LocalSystem,
-    [switch]$Net10
+    [switch]$Net10,
+    [ValidateSet('pl', 'en', 'de')]
+    [string]$Language
 )
 
 $ErrorActionPreference = 'Stop'
 $repo = 'zapqio/dotnet-runner'
 $baseUrl = 'wss://app.zapq.io'
 
+# Tłumaczenia pozostają w skrypcie, aby działało także uruchomienie przez irm.
+# Nazwy parametrów, klucze konfiguracji i wzorce odczytywane z logów są niezmienne.
+$installerMessages = @{
+    pl = @{
+        LanguageSelected = '==> Język instalacji: polski.'
+        InstanceOrUrl = 'Podaj -Instance albo -Url — nie oba naraz.'
+        InstanceNameOnly = '-Instance to sama nazwa instancji (np. test); pełny adres podaje się przez -Url.'
+        AdministratorRequired = 'Uruchom ten skrypt w PowerShellu jako administrator.'
+        DesktopRuntimeRequired = @'
+Brak .NET Desktop Runtime {0} (x64), którego wymaga runner. Zainstaluj go i uruchom skrypt ponownie:
+  winget install Microsoft.DotNet.DesktopRuntime.{0}
+albo instalatorem ze strony https://dotnet.microsoft.com/download/dotnet/{0}.0 (sekcja ".NET Desktop Runtime", Windows x64).
+'@
+        ServiceCommandFailed = "sc.exe {0} zakończyło się kodem {1}:`n{2}"
+        CheckingLatestRelease = '==> Sprawdzam najnowszy release...'
+        Downloading = '==> Pobieram {0}'
+        DownloadFailed = 'Nie udało się pobrać paczki ({0}). Sprawdź, czy wersja {1} istnieje: https://github.com/{2}/releases{3}'
+        Net8PackageHint = ' — paczki win-x64-net8 są wydawane od 0.1.4.'
+        Extracting = '==> Rozpakowuję...'
+        InvalidPackage = 'W paczce nie ma Zapqio.Runner.exe — to nie wygląda na paczkę win-x64 runnera.'
+        StoppingService = '==> Zatrzymuję usługę {0}...'
+        CopyingFiles = '==> Kopiuję pliki do {0}...'
+        InstancePrompt = 'Nazwa instancji Web, np. test'
+        TokenPrompt = 'Token runnera z panelu Web'
+        RunnerNamePrompt = 'Nazwa runnera (Enter = wygeneruje się UUID; nazwy nie da się potem zmienić)'
+        ConcurrencyPrompt = 'Maksymalna liczba równoczesnych zadań (Enter = 1)'
+        PositiveIntegerRequired = 'Podaj liczbę całkowitą większą od zera.'
+        ConfigurationSaved = '==> Zapisano w appsettings.json: {0}.'
+        ConcurrencySaveFailed = 'Nie udało się zapisać MaxConcurrency do {0}: {1}'
+        ConfigurationParseFailed = 'Nie udało się sparsować {0} (plik z komentarzami?). Ustaw ręcznie: {1}.'
+        RegisteringService = '==> Rejestruję usługę {0}...'
+        ServiceDescription = 'Zapqio Runner - wykonuje zadania zlecane przez serwer Web Zapqio.'
+        UpdatingServicePath = '==> Aktualizuję ścieżkę binarki w usłudze...'
+        GrantingDirectoryAccess = '==> Nadaję kontu usługi prawo zapisu do katalogu instalacji...'
+        AccessControlFailed = 'icacls na {0} zakończyło się kodem {1}.'
+        GrantingServiceRestart = '==> Nadaję kontu usługi prawo restartu własnej usługi...'
+        MissingSecurityDescriptor = 'sc.exe sdshow nie zwróciło deskryptora zabezpieczeń'
+        ServiceRestartPermissionFailed = 'Nie udało się nadać kontu usługi prawa restartu ({0}). Moduły podmieniające biblioteki użyją opcji odzyskiwania usługi.'
+        StartingService = '==> Uruchamiam usługę {0}...'
+        ServiceStartFailed = 'Nie udało się uruchomić usługi: {0}'
+        ServiceStartAdvice = 'Zajrzyj do {0}, popraw konfigurację i spróbuj: sc.exe start {1}'
+        EventLogLocation = 'Dziennika zdarzeń Windows (Application)'
+        WaitingForConnection = '==> Czekam na ślad połączenia WebSocket w logu (do 30 s)...'
+        Connected = '==> Runner nawiązał połączenie WebSocket z instancją Web.'
+        ConnectionRejected = 'Serwer odrzucił połączenie: {0} — sprawdź adres instancji i token (docs/szczegoly.md > Rozwiązywanie problemów).'
+        ConnectionRetrying = 'Runner nie może nawiązać połączenia i ponawia próby — sprawdź adres instancji, token i dostęp sieciowy. Log: {0}'
+        ConnectionUnconfirmed = 'W ciągu 30 s log nie potwierdził połączenia — zajrzyj do {0} i do panelu Web.'
+        FileLogsDisabled = '==> Logi plikowe wyłączone — status połączenia sprawdź w panelu Web.'
+        MissingConfiguration = 'Usługa nie została uruchomiona — brak tokenu lub adresu instancji. Uzupełnij Token i Url w {0} (albo uruchom skrypt z -Token i -Instance), potem: sc.exe start {1}'
+        ServiceSummary = 'Zapqio Runner {0} (.NET {1}) — usługa {2} ({3}).'
+        DirectorySummary = '  Katalog: {0}'
+        ConfigurationSummary = '  Konfiguracja: {0}'
+        ConcurrencySummary = '  Równoczesne zadania: {0}'
+        EnvironmentConcurrencySummary = '  Limit ustala ZAPQIO_MAX_CONCURRENCY; zmienisz go instalatorem z -MaxConcurrency.'
+        LogsSummary = '  Logi: {0}'
+        LogsDisabled = 'wyłączone (Logger:PathDirectory puste)'
+        ModulesSummary = '  Moduły (.zip): {0} — po zmianach zrestartuj usługę.'
+        ConfigurationContents = 'Zawartość {0} (token zamaskowany):'
+        RestartAdvice = 'W razie problemów lub zmiany ustawień edytuj ten plik, potem: Restart-Service {0}'
+    }
+    en = @{
+        LanguageSelected = '==> Installation language: English.'
+        InstanceOrUrl = 'Specify either -Instance or -Url, not both.'
+        InstanceNameOnly = '-Instance accepts only the instance name (e.g. test); use -Url for a full address.'
+        AdministratorRequired = 'Run this script in PowerShell as an administrator.'
+        DesktopRuntimeRequired = @'
+The runner requires .NET Desktop Runtime {0} (x64), which is missing. Install it and run the script again:
+  winget install Microsoft.DotNet.DesktopRuntime.{0}
+or use the installer at https://dotnet.microsoft.com/download/dotnet/{0}.0 (".NET Desktop Runtime" section, Windows x64).
+'@
+        ServiceCommandFailed = "sc.exe {0} exited with code {1}:`n{2}"
+        CheckingLatestRelease = '==> Checking the latest release...'
+        Downloading = '==> Downloading {0}'
+        DownloadFailed = 'Could not download the package ({0}). Check that version {1} exists: https://github.com/{2}/releases{3}'
+        Net8PackageHint = ' — win-x64-net8 packages are available starting with version 0.1.4.'
+        Extracting = '==> Extracting...'
+        InvalidPackage = 'The package does not contain Zapqio.Runner.exe — it does not appear to be a win-x64 runner package.'
+        StoppingService = '==> Stopping service {0}...'
+        CopyingFiles = '==> Copying files to {0}...'
+        InstancePrompt = 'Web instance name, e.g. test'
+        TokenPrompt = 'Runner token from the Web panel'
+        RunnerNamePrompt = 'Runner name (Enter = generate a UUID; the name cannot be changed later)'
+        ConcurrencyPrompt = 'Maximum number of concurrent jobs (Enter = 1)'
+        PositiveIntegerRequired = 'Enter an integer greater than zero.'
+        ConfigurationSaved = '==> Saved to appsettings.json: {0}.'
+        ConcurrencySaveFailed = 'Could not save MaxConcurrency to {0}: {1}'
+        ConfigurationParseFailed = 'Could not parse {0} (does the file contain comments?). Set these values manually: {1}.'
+        RegisteringService = '==> Registering service {0}...'
+        ServiceDescription = 'Zapqio Runner - runs jobs assigned by the Zapqio Web server.'
+        UpdatingServicePath = '==> Updating the executable path in the service...'
+        GrantingDirectoryAccess = '==> Granting the service account write access to the installation directory...'
+        AccessControlFailed = 'icacls on {0} exited with code {1}.'
+        GrantingServiceRestart = '==> Granting the service account permission to restart its own service...'
+        MissingSecurityDescriptor = 'sc.exe sdshow did not return a security descriptor'
+        ServiceRestartPermissionFailed = 'Could not grant the service account permission to restart the service ({0}). Modules that replace libraries will use the service recovery options.'
+        StartingService = '==> Starting service {0}...'
+        ServiceStartFailed = 'Could not start the service: {0}'
+        ServiceStartAdvice = 'Check {0}, correct the configuration and try: sc.exe start {1}'
+        EventLogLocation = 'Windows Event Viewer (Application)'
+        WaitingForConnection = '==> Waiting for a WebSocket connection entry in the log (up to 30 s)...'
+        Connected = '==> The runner established a WebSocket connection to the Web instance.'
+        ConnectionRejected = 'The server rejected the connection: {0} — check the instance address and token (see docs/szczegoly.md).'
+        ConnectionRetrying = 'The runner cannot connect and is retrying — check the instance address, token and network access. Log: {0}'
+        ConnectionUnconfirmed = 'The log did not confirm a connection within 30 s — check {0} and the Web panel.'
+        FileLogsDisabled = '==> File logging is disabled — check the connection status in the Web panel.'
+        MissingConfiguration = 'The service was not started — the token or instance address is missing. Set Token and Url in {0} (or run the script with -Token and -Instance), then: sc.exe start {1}'
+        ServiceSummary = 'Zapqio Runner {0} (.NET {1}) — service {2} ({3}).'
+        DirectorySummary = '  Directory: {0}'
+        ConfigurationSummary = '  Configuration: {0}'
+        ConcurrencySummary = '  Concurrent jobs: {0}'
+        EnvironmentConcurrencySummary = '  The limit is set by ZAPQIO_MAX_CONCURRENCY; change it using the installer with -MaxConcurrency.'
+        LogsSummary = '  Logs: {0}'
+        LogsDisabled = 'disabled (Logger:PathDirectory is empty)'
+        ModulesSummary = '  Modules (.zip): {0} — restart the service after making changes.'
+        ConfigurationContents = 'Contents of {0} (token masked):'
+        RestartAdvice = 'If you encounter problems or need to change settings, edit this file, then: Restart-Service {0}'
+    }
+    de = @{
+        LanguageSelected = '==> Installationssprache: Deutsch.'
+        InstanceOrUrl = 'Geben Sie entweder -Instance oder -Url an, nicht beide gleichzeitig.'
+        InstanceNameOnly = '-Instance erwartet nur den Instanznamen (z. B. test); verwenden Sie -Url für eine vollständige Adresse.'
+        AdministratorRequired = 'Führen Sie dieses Skript in PowerShell als Administrator aus.'
+        DesktopRuntimeRequired = @'
+Der Runner benötigt .NET Desktop Runtime {0} (x64), die nicht installiert ist. Installieren Sie diese und führen Sie das Skript erneut aus:
+  winget install Microsoft.DotNet.DesktopRuntime.{0}
+oder verwenden Sie das Installationsprogramm unter https://dotnet.microsoft.com/download/dotnet/{0}.0 (Abschnitt ".NET Desktop Runtime", Windows x64).
+'@
+        ServiceCommandFailed = "sc.exe {0} wurde mit Code {1} beendet:`n{2}"
+        CheckingLatestRelease = '==> Neueste Version wird geprüft...'
+        Downloading = '==> {0} wird heruntergeladen'
+        DownloadFailed = 'Das Paket konnte nicht heruntergeladen werden ({0}). Prüfen Sie, ob Version {1} existiert: https://github.com/{2}/releases{3}'
+        Net8PackageHint = ' — win-x64-net8-Pakete sind ab Version 0.1.4 verfügbar.'
+        Extracting = '==> Dateien werden entpackt...'
+        InvalidPackage = 'Das Paket enthält keine Zapqio.Runner.exe — es scheint kein win-x64-Paket des Runners zu sein.'
+        StoppingService = '==> Dienst {0} wird beendet...'
+        CopyingFiles = '==> Dateien werden nach {0} kopiert...'
+        InstancePrompt = 'Name der Web-Instanz, z. B. test'
+        TokenPrompt = 'Runner-Token aus dem Web-Panel'
+        RunnerNamePrompt = 'Name des Runners (Enter = UUID erzeugen; der Name kann später nicht geändert werden)'
+        ConcurrencyPrompt = 'Maximale Anzahl gleichzeitiger Aufgaben (Enter = 1)'
+        PositiveIntegerRequired = 'Geben Sie eine ganze Zahl größer als null ein.'
+        ConfigurationSaved = '==> In appsettings.json gespeichert: {0}.'
+        ConcurrencySaveFailed = 'MaxConcurrency konnte nicht in {0} gespeichert werden: {1}'
+        ConfigurationParseFailed = '{0} konnte nicht gelesen werden (enthält die Datei Kommentare?). Setzen Sie diese Werte manuell: {1}.'
+        RegisteringService = '==> Dienst {0} wird registriert...'
+        ServiceDescription = 'Zapqio Runner - führt vom Zapqio-Webserver zugewiesene Aufgaben aus.'
+        UpdatingServicePath = '==> Pfad der ausführbaren Datei im Dienst wird aktualisiert...'
+        GrantingDirectoryAccess = '==> Dem Dienstkonto wird Schreibzugriff auf das Installationsverzeichnis gewährt...'
+        AccessControlFailed = 'icacls für {0} wurde mit Code {1} beendet.'
+        GrantingServiceRestart = '==> Dem Dienstkonto wird die Berechtigung zum Neustart des eigenen Dienstes gewährt...'
+        MissingSecurityDescriptor = 'sc.exe sdshow hat keinen Sicherheitsdeskriptor zurückgegeben'
+        ServiceRestartPermissionFailed = 'Dem Dienstkonto konnte die Berechtigung zum Neustart des Dienstes nicht gewährt werden ({0}). Module, die Bibliotheken ersetzen, verwenden die Wiederherstellungsoptionen des Dienstes.'
+        StartingService = '==> Dienst {0} wird gestartet...'
+        ServiceStartFailed = 'Der Dienst konnte nicht gestartet werden: {0}'
+        ServiceStartAdvice = 'Prüfen Sie {0}, korrigieren Sie die Konfiguration und versuchen Sie: sc.exe start {1}'
+        EventLogLocation = 'die Windows-Ereignisanzeige (Application)'
+        WaitingForConnection = '==> Auf einen WebSocket-Verbindungseintrag im Protokoll wird gewartet (bis zu 30 s)...'
+        Connected = '==> Der Runner hat eine WebSocket-Verbindung zur Web-Instanz hergestellt.'
+        ConnectionRejected = 'Der Server hat die Verbindung abgelehnt: {0} — prüfen Sie die Instanzadresse und das Token (siehe docs/szczegoly.md).'
+        ConnectionRetrying = 'Der Runner kann keine Verbindung herstellen und versucht es erneut — prüfen Sie die Instanzadresse, das Token und den Netzwerkzugriff. Protokoll: {0}'
+        ConnectionUnconfirmed = 'Das Protokoll hat innerhalb von 30 s keine Verbindung bestätigt — prüfen Sie {0} und das Web-Panel.'
+        FileLogsDisabled = '==> Dateiprotokollierung ist deaktiviert — prüfen Sie den Verbindungsstatus im Web-Panel.'
+        MissingConfiguration = 'Der Dienst wurde nicht gestartet — das Token oder die Instanzadresse fehlt. Setzen Sie Token und Url in {0} (oder führen Sie das Skript mit -Token und -Instance aus), danach: sc.exe start {1}'
+        ServiceSummary = 'Zapqio Runner {0} (.NET {1}) — Dienst {2} ({3}).'
+        DirectorySummary = '  Verzeichnis: {0}'
+        ConfigurationSummary = '  Konfiguration: {0}'
+        ConcurrencySummary = '  Gleichzeitige Aufgaben: {0}'
+        EnvironmentConcurrencySummary = '  Das Limit wird durch ZAPQIO_MAX_CONCURRENCY festgelegt; ändern Sie es mit dem Installationsskript und -MaxConcurrency.'
+        LogsSummary = '  Protokolle: {0}'
+        LogsDisabled = 'deaktiviert (Logger:PathDirectory ist leer)'
+        ModulesSummary = '  Module (.zip): {0} — starten Sie den Dienst nach Änderungen neu.'
+        ConfigurationContents = 'Inhalt von {0} (Token maskiert):'
+        RestartAdvice = 'Bei Problemen oder zum Ändern der Einstellungen bearbeiten Sie diese Datei, danach: Restart-Service {0}'
+    }
+}
+
+function Select-InstallerLanguage {
+    param([string]$RequestedLanguage)
+
+    if ($RequestedLanguage) {
+        return $RequestedLanguage.ToLowerInvariant()
+    }
+
+    Write-Host ''
+    Write-Host 'Wybierz język instalacji / Select installation language / Installationssprache wählen:'
+    Write-Host '  1. Polski (pl)'
+    Write-Host '  2. English (en)'
+    Write-Host '  3. Deutsch (de)'
+
+    while ($true) {
+        try {
+            $answer = Read-Host 'Wybór / Choice / Auswahl (Enter = Polski)'
+        } catch {
+            # PowerShell -NonInteractive nie pozwala na Read-Host. Zachowaj dotychczasowy język.
+            return 'pl'
+        }
+
+        switch (([string]$answer).Trim().ToLowerInvariant()) {
+            { $_ -in @('', '1', 'pl') } { return 'pl' }
+            { $_ -in @('2', 'en') } { return 'en' }
+            { $_ -in @('3', 'de') } { return 'de' }
+            default {
+                Write-Warning 'Wpisz 1/pl, 2/en lub 3/de. / Enter 1/pl, 2/en or 3/de. / Geben Sie 1/pl, 2/en oder 3/de ein.'
+            }
+        }
+    }
+}
+
+function Get-InstallerMessage {
+    param(
+        [Parameter(Mandatory)][string]$Key,
+        [object[]]$Values = @()
+    )
+
+    $message = $installerMessages[$Language][$Key]
+    if ($Values.Count -gt 0) {
+        return $message -f $Values
+    }
+
+    return $message
+}
+
+$Language = Select-InstallerLanguage $Language
+Write-Host (Get-InstallerMessage 'LanguageSelected')
+
 if ($Instance) {
-    if ($Url) { throw 'Podaj -Instance albo -Url — nie oba naraz.' }
-    if ($Instance -match '[:/\s]') { throw '-Instance to sama nazwa instancji (np. test); pełny adres podaje się przez -Url.' }
+    if ($Url) {
+        throw (Get-InstallerMessage 'InstanceOrUrl')
+    }
+
+    if ($Instance -match '[:/\s]') {
+        throw (Get-InstallerMessage 'InstanceNameOnly')
+    }
+
     $Url = "$baseUrl/$Instance"
 }
 
 # #Requires -RunAsAdministrator nie działa, gdy skrypt idzie przez irm | scriptblock
 $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    throw 'Uruchom ten skrypt w PowerShellu jako administrator.'
+    throw (Get-InstallerMessage 'AdministratorRequired')
 }
 
 # Paczka jest framework-dependent: runtime musi być na maszynie. Potrzebny jest .NET Desktop
@@ -168,18 +412,14 @@ function Test-DotnetDesktopRuntime {
 
 $runtimeMajor = if ($Net10) { 10 } else { 8 }
 if (-not (Test-DotnetDesktopRuntime $runtimeMajor)) {
-    throw @"
-Brak .NET Desktop Runtime $runtimeMajor (x64), którego wymaga runner. Zainstaluj go i uruchom skrypt ponownie:
-  winget install Microsoft.DotNet.DesktopRuntime.$runtimeMajor
-albo instalatorem ze strony https://dotnet.microsoft.com/download/dotnet/$runtimeMajor.0 (sekcja ".NET Desktop Runtime", Windows x64).
-"@
+    throw (Get-InstallerMessage 'DesktopRuntimeRequired' @($runtimeMajor))
 }
 
 function Invoke-Sc {
     param([Parameter(Mandatory)][string[]]$ScArgs)
     $out = & sc.exe @ScArgs
     if ($LASTEXITCODE -ne 0) {
-        throw "sc.exe $($ScArgs -join ' ') zakończyło się kodem ${LASTEXITCODE}:`n$($out -join "`n")"
+        throw (Get-InstallerMessage 'ServiceCommandFailed' @(($ScArgs -join ' '), $LASTEXITCODE, ($out -join "`n")))
     }
 }
 
@@ -204,7 +444,7 @@ function Format-Json {
 if ($Version) {
     $Version = $Version -replace '^v', ''
 } else {
-    Write-Host '==> Sprawdzam najnowszy release...'
+    Write-Host (Get-InstallerMessage 'CheckingLatestRelease')
     $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest" `
         -Headers @{ 'User-Agent' = 'zapqio-runner-install' }
     $Version = $release.tag_name -replace '^v', ''
@@ -220,23 +460,25 @@ New-Item -ItemType Directory -Path $tempDir | Out-Null
 try {
     # --- 2. Pobranie i rozpakowanie ------------------------------------------
 
-    Write-Host "==> Pobieram $zipUrl"
+    Write-Host (Get-InstallerMessage 'Downloading' @($zipUrl))
     $zipPath = Join-Path $tempDir $zipName
     $oldProgress = $ProgressPreference
     $ProgressPreference = 'SilentlyContinue'
     try {
         Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -UseBasicParsing
     } catch {
-        throw "Nie udało się pobrać paczki ($($_.Exception.Message)). Sprawdź, czy wersja $Version istnieje: https://github.com/$repo/releases$(if (-not $Net10) { ' — paczki win-x64-net8 są wydawane od 0.1.4.' })"
+        $packageHint = if ($Net10) { '' } else { Get-InstallerMessage 'Net8PackageHint' }
+
+        throw (Get-InstallerMessage 'DownloadFailed' @($_.Exception.Message, $Version, $repo, $packageHint))
     } finally {
         $ProgressPreference = $oldProgress
     }
 
-    Write-Host '==> Rozpakowuję...'
+    Write-Host (Get-InstallerMessage 'Extracting')
     $extractDir = Join-Path $tempDir 'extract'
     Expand-Archive -Path $zipPath -DestinationPath $extractDir
     if (-not (Test-Path (Join-Path $extractDir 'Zapqio.Runner.exe'))) {
-        throw 'W paczce nie ma Zapqio.Runner.exe — to nie wygląda na paczkę win-x64 runnera.'
+        throw (Get-InstallerMessage 'InvalidPackage')
     }
 
     # --- 3. Zatrzymanie usługi przy aktualizacji -----------------------------
@@ -244,7 +486,7 @@ try {
     $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
     $isUpgrade = [bool]$service
     if ($service -and $service.Status -ne 'Stopped') {
-        Write-Host "==> Zatrzymuję usługę $ServiceName..."
+        Write-Host (Get-InstallerMessage 'StoppingService' @($ServiceName))
         Stop-Service -Name $ServiceName -Force
         Start-Sleep -Seconds 2  # chwila na zwolnienie uchwytów plików
     }
@@ -263,7 +505,7 @@ try {
             Remove-Item -Recurse -Force
     }
 
-    Write-Host "==> Kopiuję pliki do $InstallDir..."
+    Write-Host (Get-InstallerMessage 'CopyingFiles' @($InstallDir))
     Get-ChildItem -Path $extractDir -Force |
         Where-Object { $_.Name -ne 'appsettings.json' } |
         Copy-Item -Destination $InstallDir -Recurse -Force
@@ -315,31 +557,41 @@ try {
         try {
             if (-not $haveUrl) {
                 do {
-                    $answer = (Read-Host 'Nazwa instancji Web, np. test').Trim().Trim('/')
+                    $answer = (Read-Host (Get-InstallerMessage 'InstancePrompt')).Trim().Trim('/')
                 } while (-not $answer)
                 # Wklejony pełny adres ws(s):// przyjmij bez sklejania z $baseUrl
                 $overrides['Url'] = if ($answer -match '^wss?://') { $answer } else { "$baseUrl/$answer" }
                 $haveUrl = $true
             }
+
             if (-not $haveToken) {
                 do {
-                    $answer = (Read-Host 'Token runnera z panelu Web').Trim()
+                    $answer = (Read-Host (Get-InstallerMessage 'TokenPrompt')).Trim()
                 } while (-not $answer)
                 $overrides['Token'] = $answer
                 $haveToken = $true
             }
+
             # Nazwę wolno nadać tylko, dopóki runner jej nie ma — potem jest związana z tokenem
             if (-not $overrides['Name'] -and -not $fileName -and -not (Test-Path (Join-Path $InstallDir '##Name'))) {
-                $answer = Read-Host 'Nazwa runnera (Enter = wygeneruje się UUID; nazwy nie da się potem zmienić)'
-                if ($answer) { $overrides['Name'] = $answer }
+                $answer = Read-Host (Get-InstallerMessage 'RunnerNamePrompt')
+                if ($answer) {
+                    $overrides['Name'] = $answer
+                }
             }
+
             if (-not $hadConfig -and -not $setMaxConcurrency) {
                 do {
-                    $answer = (Read-Host 'Maksymalna liczba równoczesnych zadań (Enter = 1)').Trim()
-                    if (-not $answer) { $answer = '1' }
+                    $answer = (Read-Host (Get-InstallerMessage 'ConcurrencyPrompt')).Trim()
+                    if (-not $answer) {
+                        $answer = '1'
+                    }
+
                     $parsedConcurrency = 0
                     $validConcurrency = [int]::TryParse($answer, [ref]$parsedConcurrency) -and $parsedConcurrency -ge 1
-                    if (-not $validConcurrency) { Write-Warning 'Podaj liczbę całkowitą większą od zera.' }
+                    if (-not $validConcurrency) {
+                        Write-Warning (Get-InstallerMessage 'PositiveIntegerRequired')
+                    }
                 } while (-not $validConcurrency)
                 $overrides['MaxConcurrency'] = $parsedConcurrency
                 $setMaxConcurrency = $true
@@ -366,29 +618,30 @@ try {
             }
             Format-Json ($config | ConvertTo-Json -Depth 10) | Set-Content -Path $appsettingsPath -Encoding UTF8
             $savedKeys = @($overrides.Keys) + @($loggerOverrides.Keys | ForEach-Object { "Logger:$_" })
-            Write-Host "==> Zapisano w appsettings.json: $($savedKeys -join ', ')."
+            Write-Host (Get-InstallerMessage 'ConfigurationSaved' @(($savedKeys -join ', ')))
         } catch {
             if ($setMaxConcurrency) {
-                throw "Nie udało się zapisać MaxConcurrency do ${appsettingsPath}: $($_.Exception.Message)"
+                throw (Get-InstallerMessage 'ConcurrencySaveFailed' @($appsettingsPath, $_.Exception.Message))
             }
+
             $wanted = @($overrides.Keys) + @($loggerOverrides.Keys | ForEach-Object { "Logger:$_" })
-            Write-Warning "Nie udało się sparsować $appsettingsPath (plik z komentarzami?). Ustaw ręcznie: $($wanted -join ', ')."
+            Write-Warning (Get-InstallerMessage 'ConfigurationParseFailed' @($appsettingsPath, ($wanted -join ', ')))
         }
     }
 
     # --- 6. Rejestracja usługi -----------------------------------------------
 
     if (-not $isUpgrade) {
-        Write-Host "==> Rejestruję usługę $ServiceName..."
+        Write-Host (Get-InstallerMessage 'RegisteringService' @($ServiceName))
         $displayName = if ($ServiceName -eq 'ZapqioRunner') { 'Zapqio Runner' } else { $ServiceName }
         Invoke-Sc @('create', $ServiceName, 'binPath=', "`"$exePath`"", 'start=', 'auto', 'DisplayName=', $displayName)
-        Invoke-Sc @('description', $ServiceName, 'Zapqio Runner - wykonuje zadania zlecane przez serwer Web Zapqio.')
+        Invoke-Sc @('description', $ServiceName, (Get-InstallerMessage 'ServiceDescription'))
         Invoke-Sc @('failure', $ServiceName, 'reset=', '86400', 'actions=', 'restart/5000/restart/30000/restart/60000')
     } else {
         # Gdy ktoś zmienił -InstallDir między instalacjami, dociągnij binPath do nowego exe
         $currentPath = (Get-CimInstance Win32_Service -Filter "Name='$ServiceName'").PathName
         if ($currentPath -and $currentPath.Trim('"') -ne $exePath) {
-            Write-Host '==> Aktualizuję ścieżkę binarki w usłudze...'
+            Write-Host (Get-InstallerMessage 'UpdatingServicePath')
             Invoke-Sc @('config', $ServiceName, 'binPath=', "`"$exePath`"")
         }
     }
@@ -424,18 +677,23 @@ try {
     # --- 7. Uprawnienia ------------------------------------------------------
 
     if (-not $LocalSystem) {
-        Write-Host '==> Nadaję kontu usługi prawo zapisu do katalogu instalacji...'
+        Write-Host (Get-InstallerMessage 'GrantingDirectoryAccess')
         & icacls $InstallDir /grant "NT SERVICE\${ServiceName}:(OI)(CI)M" | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "icacls na $InstallDir zakończyło się kodem $LASTEXITCODE." }
+        if ($LASTEXITCODE -ne 0) {
+            throw (Get-InstallerMessage 'AccessControlFailed' @($InstallDir, $LASTEXITCODE))
+        }
 
         # Moduł może zrestartować usługę po podmianie swoich bibliotek (tak robi moduł Nexo po aktualizacji
         # Subiekta): konto usługi dostaje prawo start/stop na własnej usłudze. Bez tego prawa skrypt modułu
         # kończy proces runnera i usługa wstaje z opcji odzyskiwania, więc błąd tutaj nie przerywa instalacji.
-        Write-Host '==> Nadaję kontu usługi prawo restartu własnej usługi...'
+        Write-Host (Get-InstallerMessage 'GrantingServiceRestart')
         try {
             $serviceSid = (New-Object System.Security.Principal.NTAccount("NT SERVICE\$ServiceName")).Translate([System.Security.Principal.SecurityIdentifier]).Value
             $sddl = (& sc.exe sdshow $ServiceName | Where-Object { $_ -match '^D:' }) -join ''
-            if (-not $sddl) { throw 'sc.exe sdshow nie zwróciło deskryptora zabezpieczeń' }
+            if (-not $sddl) {
+                throw (Get-InstallerMessage 'MissingSecurityDescriptor')
+            }
+
             if ($sddl -notlike "*$serviceSid*") {
                 $ace = "(A;;CCLCSWRPWPDTLOCRRC;;;$serviceSid)"
                 $newSddl = if ($sddl -match '^(D:.*?)(S:.*)$') { $Matches[1] + $ace + $Matches[2] } else { $sddl + $ace }
@@ -443,7 +701,7 @@ try {
             }
         }
         catch {
-            Write-Warning "Nie udało się nadać kontu usługi prawa restartu ($($_.Exception.Message)). Moduły podmieniające biblioteki użyją opcji odzyskiwania usługi."
+            Write-Warning (Get-InstallerMessage 'ServiceRestartPermissionFailed' @($_.Exception.Message))
         }
     }
 
@@ -452,7 +710,9 @@ try {
         $grants = @('*S-1-5-18:F', '*S-1-5-32-544:F')  # SYSTEM, Administratorzy
         if (-not $LocalSystem) { $grants += "NT SERVICE\${ServiceName}:R" }
         & icacls $appsettingsPath /inheritance:r /grant:r $grants | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "icacls na $appsettingsPath zakończyło się kodem $LASTEXITCODE." }
+        if ($LASTEXITCODE -ne 0) {
+            throw (Get-InstallerMessage 'AccessControlFailed' @($appsettingsPath, $LASTEXITCODE))
+        }
     }
 
     # Konfiguracja modułów (Config\<moduł>.json) - moduły trzymają tam hasła do swoich systemów, więc ACL
@@ -470,7 +730,7 @@ try {
     & icacls $deploymentDir /inheritance:r /grant:r $deploymentGrants | Out-Null
     if ($LASTEXITCODE -ne 0)
     {
-        throw "icacls na $deploymentDir zakończyło się kodem $LASTEXITCODE."
+        throw (Get-InstallerMessage 'AccessControlFailed' @($deploymentDir, $LASTEXITCODE))
     }
 
     $configDir = Join-Path $InstallDir 'Config'
@@ -478,7 +738,9 @@ try {
     $configGrants = @('*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F')
     if (-not $LocalSystem) { $configGrants += "NT SERVICE\${ServiceName}:(OI)(CI)M" }
     & icacls $configDir /inheritance:r /grant:r $configGrants | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "icacls na $configDir zakończyło się kodem $LASTEXITCODE." }
+    if ($LASTEXITCODE -ne 0) {
+        throw (Get-InstallerMessage 'AccessControlFailed' @($configDir, $LASTEXITCODE))
+    }
 
     # --- 8. Start i weryfikacja połączenia -----------------------------------
 
@@ -500,18 +762,20 @@ try {
             if ($preLogFile) { $preLogOffset = $preLogFile.Length }
         }
 
-        Write-Host "==> Uruchamiam usługę $ServiceName..."
+        Write-Host (Get-InstallerMessage 'StartingService' @($ServiceName))
         $started = $false
         try {
             Start-Service -Name $ServiceName
             $started = $true
         } catch {
-            Write-Warning "Nie udało się uruchomić usługi: $($_.Exception.Message)"
-            Write-Warning "Zajrzyj do $(if ($logsDir) { $logsDir } else { 'Dziennika zdarzeń Windows (Application)' }), popraw konfigurację i spróbuj: sc.exe start $ServiceName"
+            Write-Warning (Get-InstallerMessage 'ServiceStartFailed' @($_.Exception.Message))
+            $diagnosticsLocation = if ($logsDir) { $logsDir } else { Get-InstallerMessage 'EventLogLocation' }
+
+            Write-Warning (Get-InstallerMessage 'ServiceStartAdvice' @($diagnosticsLocation, $ServiceName))
         }
 
         if ($started -and $logsDir) {
-            Write-Host '==> Czekam na ślad połączenia WebSocket w logu (do 30 s)...'
+            Write-Host (Get-InstallerMessage 'WaitingForConnection')
             $deadline = (Get-Date).AddSeconds(30)
             $connected = $false
             $rejection = $null
@@ -539,19 +803,19 @@ try {
                 if ($newLog -match 'Kolejna próba połączenia') { $retrying = $true }
             }
             if ($connected) {
-                Write-Host '==> Runner nawiązał połączenie WebSocket z instancją Web.'
+                Write-Host (Get-InstallerMessage 'Connected')
             } elseif ($rejection) {
-                Write-Warning "Serwer odrzucił połączenie: $rejection — sprawdź adres instancji i token (docs/szczegoly.md > Rozwiązywanie problemów)."
+                Write-Warning (Get-InstallerMessage 'ConnectionRejected' @($rejection))
             } elseif ($retrying) {
-                Write-Warning "Runner nie może nawiązać połączenia i ponawia próby — sprawdź adres instancji, token i dostęp sieciowy. Log: $logsDir"
+                Write-Warning (Get-InstallerMessage 'ConnectionRetrying' @($logsDir))
             } else {
-                Write-Warning "W ciągu 30 s log nie potwierdził połączenia — zajrzyj do $logsDir i do panelu Web."
+                Write-Warning (Get-InstallerMessage 'ConnectionUnconfirmed' @($logsDir))
             }
         } elseif ($started) {
-            Write-Host '==> Logi plikowe wyłączone — status połączenia sprawdź w panelu Web.'
+            Write-Host (Get-InstallerMessage 'FileLogsDisabled')
         }
     } else {
-        Write-Warning "Usługa nie została uruchomiona — brak tokenu lub adresu instancji. Uzupełnij Token i Url w $appsettingsPath (albo uruchom skrypt z -Token i -Instance), potem: sc.exe start $ServiceName"
+        Write-Warning (Get-InstallerMessage 'MissingConfiguration' @($appsettingsPath, $ServiceName))
     }
 
     # --- 9. Podsumowanie -----------------------------------------------------
@@ -570,20 +834,23 @@ try {
     $installedVersion = (Get-Item $exePath).VersionInfo.ProductVersion
     $status = (Get-Service -Name $ServiceName).Status
     Write-Host ''
-    Write-Host "Zapqio Runner $installedVersion (.NET $runtimeMajor) — usługa $ServiceName ($status)."
-    Write-Host "  Katalog: $InstallDir"
-    Write-Host "  Konfiguracja: $appsettingsPath"
-    Write-Host "  Równoczesne zadania: $effectiveConcurrency"
+    Write-Host (Get-InstallerMessage 'ServiceSummary' @($installedVersion, $runtimeMajor, $ServiceName, $status))
+    Write-Host (Get-InstallerMessage 'DirectorySummary' @($InstallDir))
+    Write-Host (Get-InstallerMessage 'ConfigurationSummary' @($appsettingsPath))
+    Write-Host (Get-InstallerMessage 'ConcurrencySummary' @($effectiveConcurrency))
     if ($environmentConcurrency) {
-        Write-Host '  Limit ustala ZAPQIO_MAX_CONCURRENCY; zmienisz go instalatorem z -MaxConcurrency.'
+        Write-Host (Get-InstallerMessage 'EnvironmentConcurrencySummary')
     }
-    Write-Host "  Logi: $(if ($logsDir) { $logsDir } else { 'wyłączone (Logger:PathDirectory puste)' })"
-    Write-Host "  Moduły (.zip): $(Join-Path $InstallDir 'Modules') — po zmianach zrestartuj usługę."
+
+    $logSummary = if ($logsDir) { $logsDir } else { Get-InstallerMessage 'LogsDisabled' }
+
+    Write-Host (Get-InstallerMessage 'LogsSummary' @($logSummary))
+    Write-Host (Get-InstallerMessage 'ModulesSummary' @((Join-Path $InstallDir 'Modules')))
     Write-Host ''
-    Write-Host "Zawartość $appsettingsPath (token zamaskowany):"
+    Write-Host (Get-InstallerMessage 'ConfigurationContents' @($appsettingsPath))
     Write-Host (($rawConfig -replace '("Token"\s*:\s*")([^"]{4})[^"]{4,}(")', '$1$2...$3').TrimEnd())
     Write-Host ''
-    Write-Host "W razie problemów lub zmiany ustawień edytuj ten plik, potem: Restart-Service $ServiceName"
+    Write-Host (Get-InstallerMessage 'RestartAdvice' @($ServiceName))
 } finally {
     # Remove-Item wykrzacza się na ścieżkach ze skróconą nazwą 8.3 (np. C:\Users\UKASZ~1),
     # a taką potrafi mieć %TEMP% — .NET usuwa je bez problemu

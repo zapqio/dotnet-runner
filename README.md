@@ -64,9 +64,14 @@ $s = irm https://raw.githubusercontent.com/zapqio/dotnet-runner/main/install.ps1
 & ([scriptblock]::Create($s.TrimStart([char]0xFEFF)))
 ```
 
-Skrypt zapyta o nazwę instancji, token i nazwę runnera (Enter = wygenerowany UUID). Możesz je też
-podać od razu: dopisz `-Instance moja-instancja -Token <token>` na końcu drugiej linii.
+Skrypt najpierw zapyta o język instalacji: polski, angielski lub niemiecki (Enter = polski).
+Potem zapyta o nazwę instancji, token i nazwę runnera (Enter = wygenerowany UUID). Możesz je też
+podać od razu: dopisz `-Language pl -Instance moja-instancja -Token <token>` na końcu drugiej linii.
 Z klonu repozytorium: `.\install.ps1 -Instance moja-instancja -Token <token>`.
+
+Wybór języka możesz pominąć parametrem `-Language pl`, `-Language en` albo `-Language de`.
+W automatyzacji podaj go jawnie; gdy host nie pozwala na odczyt z konsoli
+(np. PowerShell z `-NonInteractive`), instalator bez tego parametru używa polskiego.
 
 ![Przebieg instalacji w konsoli](docs/screenshots/5.instalacja.png)
 
@@ -81,6 +86,7 @@ Wszystkie są opcjonalne.
 
 | Parametr | Opis |
 | --- | --- |
+| `-Language` | Język instalatora: `pl`, `en`, `de`. Bez parametru pojawia się menu; Enter wybiera polski. |
 | `-Instance` | Nazwa instancji; adres `wss://app.zapq.io/<nazwa>` trafia do `Url`. |
 | `-Url` | Pełny adres zamiast `-Instance`, np. lokalne `ws://…`. |
 | `-Token`, `-RunnerName` | Token i nazwa runnera (`Token`, `Name`). |
