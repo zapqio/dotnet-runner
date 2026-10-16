@@ -65,17 +65,21 @@ $s = irm https://raw.githubusercontent.com/zapqio/dotnet-runner/main/install.ps1
 ```
 
 Skrypt najpierw zapyta o język instalacji: polski, angielski lub niemiecki (Enter = polski).
-Potem zapyta o nazwę instancji, token i nazwę runnera (Enter = wygenerowany UUID). Możesz je też
+Przed pobraniem paczki zapyta o katalog instalacji (Enter = `C:\zapqio\runner`) i nazwę usługi
+Windows (Enter = `ZapqioRunner`). Wpisz własną wartość, aby ją zmienić. Parametry `-InstallDir`
+i `-ServiceName` pomijają odpowiednie pytania.
+Następnie zapyta o nazwę instancji, token i nazwę runnera (Enter = wygenerowany UUID). Możesz je też
 podać od razu: dopisz `-Language pl -Instance moja-instancja -Token <token>` na końcu drugiej linii.
 Z klonu repozytorium: `.\install.ps1 -Instance moja-instancja -Token <token>`.
 
 Wybór języka możesz pominąć parametrem `-Language pl`, `-Language en` albo `-Language de`.
-W automatyzacji podaj go jawnie; gdy host nie pozwala na odczyt z konsoli
-(np. PowerShell z `-NonInteractive`), instalator bez tego parametru używa polskiego.
+W automatyzacji podaj jawnie `-Language`, `-InstallDir` i `-ServiceName`; gdy host nie pozwala
+na odczyt z konsoli (np. PowerShell z `-NonInteractive`), pominięte parametry zachowują wartości
+domyślne: polski, `C:\zapqio\runner` i `ZapqioRunner`.
 
 ![Przebieg instalacji w konsoli](docs/screenshots/5.instalacja.png)
 
-Instalator pobiera paczkę, zapisuje `appsettings.json`, zakłada usługę `ZapqioRunner` i czeka, aż
+Instalator pobiera paczkę, zapisuje `appsettings.json`, zakłada usługę pod wybraną nazwą i czeka, aż
 runner połączy się z Web. Po udanej instalacji nazwa runnera w panelu robi się zielona.
 
 ![Runner połączony — nazwa w panelu na zielono](docs/screenshots/6.po-instalacji.png)
@@ -93,8 +97,8 @@ Wszystkie są opcjonalne.
 | `-MaxConcurrency` | Ile zadań naraz (`MaxConcurrency`). |
 | `-LogLevel`, `-LogDirectory` | Poziom i katalog logów. Nie wyłączaj logów plikowych (`""`) — w usłudze to jedyny lokalny ślad. |
 | `-Version` | Konkretna wersja, np. `0.1.1`; domyślnie najnowsza. |
-| `-InstallDir` | Katalog instalacji, domyślnie `C:\zapqio\runner`. |
-| `-ServiceName` | Nazwa usługi, domyślnie `ZapqioRunner`. |
+| `-InstallDir` | Katalog instalacji, domyślnie `C:\zapqio\runner`. Bez parametru skrypt pyta o katalog; Enter zatwierdza domyślny. |
+| `-ServiceName` | Nazwa usługi, domyślnie `ZapqioRunner`. Bez parametru skrypt pyta o nazwę; Enter zatwierdza domyślną. |
 | `-Net10` | Wariant pod .NET 10. |
 | `-LocalSystem` | Usługa na koncie LocalSystem zamiast konta wirtualnego. |
 

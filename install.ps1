@@ -15,6 +15,9 @@
 
     Na początku pozwala wybrać język instalacji: polski, angielski lub niemiecki.
     Parametr -Language pomija wybór interaktywny.
+    Przed pobraniem paczki pyta o katalog instalacji i nazwę usługi Windows.
+    Enter zatwierdza wartości domyślne; -InstallDir i -ServiceName pomijają
+    odpowiednie pytania. Bez odczytu z konsoli pozostają wartości domyślne.
     O brakującą nazwę instancji i token pyta interaktywnie; przy nowej instalacji
     pyta też o liczbę równoczesnych zadań. Zapisuje konfigurację w appsettings.json,
     a po starcie usługi czeka, aż w logu pojawi się
@@ -29,10 +32,13 @@
 
 .PARAMETER InstallDir
     Katalog instalacji. Domyślnie C:\zapqio\runner — celowo poza Program Files,
-    bo runner zapisuje pliki obok binarki.
+    bo runner zapisuje pliki obok binarki. Bez parametru skrypt pyta o katalog;
+    Enter zatwierdza domyślny. Jawne podanie parametru pomija pytanie.
 
 .PARAMETER ServiceName
     Nazwa usługi Windows. Domyślnie ZapqioRunner.
+    Bez parametru skrypt pyta o nazwę; Enter zatwierdza domyślną.
+    Jawne podanie parametru pomija pytanie.
 
 .PARAMETER Instance
     Nazwa instancji Web, np. test. Skrypt buduje z niej adres
@@ -152,6 +158,8 @@ $baseUrl = 'wss://app.zapq.io'
 $installerMessages = @{
     pl = @{
         LanguageSelected = '==> Język instalacji: polski.'
+        InstallDirPrompt = 'Katalog instalacji (Enter = {0}; wpisz inną ścieżkę, aby zmienić)'
+        ServiceNamePrompt = 'Nazwa usługi Windows (Enter = {0}; wpisz inną nazwę, aby zmienić)'
         InstanceOrUrl = 'Podaj -Instance albo -Url — nie oba naraz.'
         InstanceNameOnly = '-Instance to sama nazwa instancji (np. test); pełny adres podaje się przez -Url.'
         AdministratorRequired = 'Uruchom ten skrypt w PowerShellu jako administrator.'
@@ -209,6 +217,8 @@ albo instalatorem ze strony https://dotnet.microsoft.com/download/dotnet/{0}.0 (
     }
     en = @{
         LanguageSelected = '==> Installation language: English.'
+        InstallDirPrompt = 'Installation directory (Enter = {0}; type another path to change it)'
+        ServiceNamePrompt = 'Windows service name (Enter = {0}; type another name to change it)'
         InstanceOrUrl = 'Specify either -Instance or -Url, not both.'
         InstanceNameOnly = '-Instance accepts only the instance name (e.g. test); use -Url for a full address.'
         AdministratorRequired = 'Run this script in PowerShell as an administrator.'
@@ -266,6 +276,8 @@ or use the installer at https://dotnet.microsoft.com/download/dotnet/{0}.0 (".NE
     }
     de = @{
         LanguageSelected = '==> Installationssprache: Deutsch.'
+        InstallDirPrompt = 'Installationsverzeichnis (Enter = {0}; zum Ändern einen anderen Pfad eingeben)'
+        ServiceNamePrompt = 'Name des Windows-Dienstes (Enter = {0}; zum Ändern einen anderen Namen eingeben)'
         InstanceOrUrl = 'Geben Sie entweder -Instance oder -Url an, nicht beide gleichzeitig.'
         InstanceNameOnly = '-Instance erwartet nur den Instanznamen (z. B. test); verwenden Sie -Url für eine vollständige Adresse.'
         AdministratorRequired = 'Führen Sie dieses Skript in PowerShell als Administrator aus.'
@@ -369,6 +381,28 @@ function Get-InstallerMessage {
     return $message
 }
 
+function Read-InstallerValue {
+    param(
+        [Parameter(Mandatory)][string]$PromptKey,
+        [Parameter(Mandatory)][string]$DefaultValue
+    )
+
+    $prompt = Get-InstallerMessage $PromptKey @($DefaultValue)
+    try {
+        $answer = Read-Host $prompt
+    } catch {
+        # PowerShell -NonInteractive nie pozwala na Read-Host. Zachowaj wartość domyślną.
+        return $DefaultValue
+    }
+
+    $answer = ([string]$answer).Trim()
+    if ($answer) {
+        return $answer
+    }
+
+    return $DefaultValue
+}
+
 $Language = Select-InstallerLanguage $Language
 Write-Host (Get-InstallerMessage 'LanguageSelected')
 
@@ -438,6 +472,15 @@ function Format-Json {
 }
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+
+# Potwierdź ustawienia przed pobieraniem paczki i zmianami w istniejącej instalacji.
+if (-not $PSBoundParameters.ContainsKey('InstallDir')) {
+    $InstallDir = Read-InstallerValue 'InstallDirPrompt' $InstallDir
+}
+
+if (-not $PSBoundParameters.ContainsKey('ServiceName')) {
+    $ServiceName = Read-InstallerValue 'ServiceNamePrompt' $ServiceName
+}
 
 # --- 1. Ustalenie wersji ------------------------------------------------------
 
