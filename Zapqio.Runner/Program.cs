@@ -1,5 +1,5 @@
 using Serilog;
-using Serilog.Events;
+using System.Runtime.InteropServices;
 using Zapqio.Runner.Background;
 using Zapqio.Runner.Core;
 
@@ -69,7 +69,10 @@ namespace Zapqio.Runner
                 s.Normalize();
                 return s;
             });
-            builder.Services.AddSerilog();
+            // Configure the logger during DI construction, before the host captures its ILogger.
+            var originalConsoleOut = Console.Out;
+            builder.Services.AddSerilog((services, log) =>
+                RunnerLogging.Configure(log, services.GetRequiredService<AppSettings>().Logger, originalConsoleOut));
 
             // Kolejka wyjściowa i jej jedyny autor. Wszystko, co idzie do platformy, przechodzi tędy.
             builder.Services.AddSingleton(sp => new Outbox(sp.GetRequiredService<AppSettings>().MaxQueuedLogLines));
@@ -80,7 +83,8 @@ namespace Zapqio.Runner
             builder.Services.AddSingleton<ScopedConsole>();
             builder.Services.AddSingleton(sp => new MethodsProvider(sp.GetRequiredService<ILogger<MethodsProvider>>(),
                 sp.GetRequiredService<JobLogWriter>(), deferred: true));
-            builder.Services.AddSingleton(new Deployments.DeploymentStore(Path.Combine(AppContext.BaseDirectory, "Deployments")));
+            builder.Services.AddSingleton(services => new Deployments.DeploymentStore(
+                Path.Combine(AppContext.BaseDirectory, "Deployments"), services.GetRequiredService<ILogger<Deployments.DeploymentStore>>()));
             builder.Services.AddSingleton<Deployments.DeploymentCoordinator>();
             builder.Services.AddSingleton<WSClient>();
             builder.Services.AddSingleton<RunnerProcessState>();
@@ -115,33 +119,19 @@ namespace Zapqio.Runner
             builder.Services.AddOptions<HostOptions>().Configure<AppSettings>((options, settings) =>
                 options.ShutdownTimeout = TimeSpan.FromSeconds(settings.StopTimeoutSeconds + 15));
 
-            var host = builder.Build();
-            PreRun(host).GetAwaiter().GetResult();
-            await host.RunAsync();
-            return 0;
-
-            static async Task PreRun(IHost host)
+            using var host = builder.Build();
+            var logger = host.Services.GetRequiredService<ILogger<Program>>();
+            var lifetime = host.Services.GetRequiredService<IHostApplicationLifetime>();
+            using var stoppingLog = lifetime.ApplicationStopping.Register(() =>
+                logger.LogWarning("Runner shutdown requested; stopping hosted services"));
+            using var stoppedLog = lifetime.ApplicationStopped.Register(() =>
+                logger.LogInformation("Runner hosted services stopped"));
+            try
             {
+                logger.LogInformation("Runner starting: version={Version}, runtime={Runtime}, baseDirectory={BaseDirectory}, account={Account}",
+                    typeof(Program).Assembly.GetName().Version, RuntimeInformation.FrameworkDescription,
+                    AppContext.BaseDirectory, $"{Environment.UserDomainName}\\{Environment.UserName}");
                 var settings = host.Services.GetRequiredService<AppSettings>();
-
-                if (!Enum.TryParse<LogEventLevel>(settings.Logger.LogLevel, out var logLevel))
-                {
-                    logLevel = LogEventLevel.Information;
-                }
-
-                var template = "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} {Level:u3} {SourceContext}] {Message:lj}{NewLine}{Exception}";
-                var originalConsoleOut = Console.Out; // Zapisz PRZED utworzeniem ScopedConsole
-                var log = new LoggerConfiguration()
-                .WriteTo.TextWriter(originalConsoleOut, outputTemplate: template)
-                .MinimumLevel.Is(logLevel)
-                .MinimumLevel.Override("Microsoft.AspNetCore", LogEventLevel.Warning);
-                if (!string.IsNullOrEmpty(settings.Logger.PathDirectory))
-                {
-                    string fullPath = Path.IsPathRooted(settings.Logger.PathDirectory) ? settings.Logger.PathDirectory : Path.Combine(AppContext.BaseDirectory, settings.Logger.PathDirectory);
-                    log.WriteTo.File(Path.Combine(fullPath, ".log"), outputTemplate: template, rollOnFileSizeLimit: true, fileSizeLimitBytes: 200 * 1048576, rollingInterval: RollingInterval.Day);
-                }
-
-                Log.Logger = log.CreateLogger();
 
                 // Statyczny RunnerLog modułów musi mieć gdzie oddawać wpisy, zanim powstanie pierwszy
                 // moduł - moduł potrafi logować już z konstruktora, a MethodsProvider buduje je
@@ -149,10 +139,18 @@ namespace Zapqio.Runner
                 // więc zwrócony uchwyt (służący tylko testom do przywrócenia poprzedniego) przepada.
                 RunnerLog.UseSink(new ModuleLogSink(host.Services.GetRequiredService<JobLogWriter>()));
 
-                var settingsLogLevel = settings.RemoteLogThreshold;
-                Log.Logger.Information(
+                logger.LogInformation(
                     "Log zadań: do platformy idą wpisy modułu od poziomu {Threshold} (ZAPQIO_MIN_LOG_LEVEL), kolejka {MaxQueued} linii",
-                    settingsLogLevel, settings.MaxQueuedLogLines);
+                    settings.RemoteLogThreshold, settings.MaxQueuedLogLines);
+                await host.StartAsync();
+                await host.WaitForShutdownAsync();
+                logger.LogInformation("Runner host finished; process exit code=0");
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                logger.LogCritical(ex, "Runner startup or shutdown failed; exception will terminate the process");
+                throw;
             }
         }
     }

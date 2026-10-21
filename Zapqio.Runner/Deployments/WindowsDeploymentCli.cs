@@ -11,6 +11,9 @@ public static class WindowsDeploymentCli
     public static bool IsCommand(string[] args) => args.Length > 0 && args[0] is "deployments" or "deploy";
     public static async Task<int> RunAsync(string[] args)
     {
+        Serilog.Core.Logger? diagnosticLog = null;
+        ILoggerFactory? loggerFactory = null;
+        ILogger? logger = null;
         try
         {
             if (!OperatingSystem.IsWindows())
@@ -30,7 +33,21 @@ public static class WindowsDeploymentCli
                 throw new UnauthorizedAccessException("Run this command from an elevated administrator terminal.");
             }
 
-            var store = new DeploymentStore(Path.Combine(AppContext.BaseDirectory, "Deployments"));
+            try
+            {
+                diagnosticLog = RunnerLogging.CreateCliLogger();
+                loggerFactory = new Serilog.Extensions.Logging.SerilogLoggerFactory(diagnosticLog, dispose: false);
+                logger = loggerFactory.CreateLogger(typeof(WindowsDeploymentCli).FullName!);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine("Deployment diagnostic logging could not be configured: " + ex.Message);
+            }
+
+            logger?.LogInformation("Deployment CLI starting: command={Command}, PID={ProcessId}, baseDirectory={BaseDirectory}",
+                args.ElementAtOrDefault(1), Environment.ProcessId, AppContext.BaseDirectory);
+            var store = new DeploymentStore(Path.Combine(AppContext.BaseDirectory, "Deployments"),
+                loggerFactory?.CreateLogger<DeploymentStore>());
             if (args.Length == 3 && args[1] == "show")
             {
                 var id = Guid.Parse(args[2]);
@@ -81,7 +98,10 @@ public static class WindowsDeploymentCli
                     throw new InvalidOperationException("The runner service must be running and connected to Web.");
                 }
 
+                logger?.LogInformation("Validating local packages for approval; service={Service}", service);
                 var request = store.RequestApproval(args.Length == 3 && args[2] == "--all" ? null : args.Skip(2).Select(Guid.Parse).ToArray());
+                logger?.LogInformation("Local deployment approval persisted: batch={BatchId}, packageCount={PackageCount}",
+                    request.BatchId, request.Packages.Count);
                 Console.WriteLine($"Approval requested for {request.Packages.Count} package(s). Waiting for Web; approval will interrupt jobs and restart {service}.");
                 var deadline = DateTime.UtcNow.AddSeconds(60);
                 while (DateTime.UtcNow < deadline)
@@ -99,12 +119,14 @@ public static class WindowsDeploymentCli
 
                     if (batch.Phase != "Requested")
                     {
+                        logger?.LogInformation("Deployment approval advanced: batch={BatchId}, phase={Phase}", request.BatchId, batch.Phase);
                         Console.WriteLine($"Web accepted the exact package set. State: {batch.Phase}. The service handles restart and installation.");
                         return 0;
                     }
 
                     await Task.Delay(250);
                 }
+                logger?.LogWarning("Deployment approval wait exceeded 60 seconds; request remains pending: batch={BatchId}", request.BatchId);
                 Console.Error.WriteLine("No Web acknowledgement yet. The request is retained and will be retried when connected. No installation may start before acknowledgement.");
                 return 2;
             }
@@ -121,8 +143,15 @@ public static class WindowsDeploymentCli
         }
         catch (Exception ex)
         {
+            logger?.LogError(ex, "Deployment CLI failed; exit code=1");
             Console.Error.WriteLine(ex.Message);
             return 1;
+        }
+        finally
+        {
+            logger?.LogInformation("Deployment CLI finished");
+            loggerFactory?.Dispose();
+            diagnosticLog?.Dispose();
         }
     }
 
@@ -138,7 +167,7 @@ public static class WindowsDeploymentCli
         return name;
     }
 
-    public static void StartRestartHelper()
+    public static void StartRestartHelper(ILogger? logger = null)
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -164,6 +193,8 @@ public static class WindowsDeploymentCli
             start.ArgumentList.Add(arg);
         }
         using var helper = Process.Start(start) ?? throw new IOException("Could not start the restart helper.");
+        logger?.LogInformation("Deployment restart helper created: service={Service}, parentPID={ParentProcessId}, helperPID={HelperProcessId}",
+            service, Environment.ProcessId, helper.Id);
     }
 
     private static async Task RestartServiceAsync(int parentId, string service)
@@ -173,20 +204,32 @@ public static class WindowsDeploymentCli
             throw new PlatformNotSupportedException();
         }
 
-        if (service != ServiceName())
-        {
-            throw new InvalidOperationException("Restart target differs from the installed service.");
-        }
-
+        var phase = "ValidateServiceIdentity";
+        var elapsed = Stopwatch.StartNew();
         try
         {
-            using var controller = new ServiceController(service);
-            if (controller.Status is not ServiceControllerStatus.Stopped and not ServiceControllerStatus.StopPending)
+            RestartTrace($"Restart helper starting; parentPID={parentId}, service={service}");
+            if (service != ServiceName())
             {
+                throw new InvalidOperationException("Restart target differs from the installed service.");
+            }
+
+            phase = "ReadServiceStatus";
+            using var controller = new ServiceController(service);
+            var status = controller.Status;
+            RestartTrace($"Service status={status}");
+            if (status is not ServiceControllerStatus.Stopped and not ServiceControllerStatus.StopPending)
+            {
+                phase = "StopService";
+                RestartTrace("Sending service stop request");
                 controller.Stop();
             }
 
+            phase = "WaitForStopped";
+            RestartTrace("Waiting for Stopped; timeout=45s");
             controller.WaitForStatus(ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(45));
+            phase = "WaitForParentExit";
+            RestartTrace($"Service stopped; waiting for parentPID={parentId}; timeout=30s");
             try
             {
                 using var parent = Process.GetProcessById(parentId);
@@ -195,15 +238,37 @@ public static class WindowsDeploymentCli
             }
             catch (ArgumentException)
             {
+                RestartTrace("Parent process already exited");
             }
+
+            phase = "StartService";
+            RestartTrace("Starting service");
             controller.Start();
+            phase = "WaitForRunning";
+            RestartTrace("Waiting for Running; timeout=45s");
             controller.WaitForStatus(ServiceControllerStatus.Running, TimeSpan.FromSeconds(45));
+            RestartTrace($"Service Running; helper completed; elapsedMs={elapsed.ElapsedMilliseconds}");
         }
         catch (Exception ex)
         {
-            var log = Path.Combine(AppContext.BaseDirectory, "Deployments", "restart.log");
-            File.AppendAllText(log, $"{DateTimeOffset.UtcNow:O} {ex.Message}{Environment.NewLine}");
+            RestartTrace($"Restart helper failed; service={service}, parentPID={parentId}, phase={phase}, elapsedMs={elapsed.ElapsedMilliseconds}", ex);
             throw;
+        }
+    }
+
+    private static void RestartTrace(string message, Exception? exception = null)
+    {
+        try
+        {
+            var directory = Path.Combine(AppContext.BaseDirectory, "Deployments");
+            Directory.CreateDirectory(directory);
+            File.AppendAllText(Path.Combine(directory, "restart.log"),
+                $"{DateTimeOffset.UtcNow:O} PID={Environment.ProcessId} {message}{Environment.NewLine}" +
+                (exception is null ? "" : exception + Environment.NewLine));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine($"Restart diagnostic log unavailable: {ex.Message}; {message}");
         }
     }
 }

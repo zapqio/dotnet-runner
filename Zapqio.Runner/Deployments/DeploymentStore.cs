@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Runtime.CompilerServices;
+using Microsoft.Extensions.Logging.Abstractions;
 using Zapqio.Deployments;
 
 namespace Zapqio.Runner.Deployments;
@@ -33,45 +35,52 @@ public sealed class DeploymentState
 
 // A single atomic JSON journal is shared by the service and the administrative CLI.
 // Opening the lock with FileShare.None also serializes independent CLI processes.
-public sealed class DeploymentStore(string root)
+public sealed class DeploymentStore(string root, ILogger<DeploymentStore>? logger = null)
 {
+    private readonly ILogger<DeploymentStore> _logger = logger ?? NullLogger<DeploymentStore>.Instance;
     public string Root { get; } = Path.GetFullPath(root);
+    private string LockPath => Path.Combine(Root, "state.lock");
     public string BundlePath(Guid id) => Path.Combine(Root, "bundles", id.ToString("N") + ".zip");
     public string WorkPath(Guid batch) => Path.Combine(Root, "work", batch.ToString("N"));
 
-    public DeploymentState Read() => Access(s => s, save: false);
-    public T Edit<T>(Func<DeploymentState, T> action) => Access(action, save: true);
-    public void Edit(Action<DeploymentState> action) => Edit(s =>
+    public DeploymentState Read([CallerMemberName] string caller = "") => Access(s => s, save: false, "Read/" + caller);
+    public T Edit<T>(Func<DeploymentState, T> action, [CallerMemberName] string operation = "") => Access(action, save: true, operation);
+    public void Edit(Action<DeploymentState> action, [CallerMemberName] string operation = "") => Edit(s =>
     {
         action(s);
         return true;
-    });
+    }, operation);
 
-    private T Access<T>(Func<DeploymentState, T> action, bool save)
+    private T Access<T>(Func<DeploymentState, T> action, bool save, string operation)
     {
-        DeploymentBundle.RequireRegularPath(Root);
-        Directory.CreateDirectory(Root);
-        var lockPath = Path.Combine(Root, "state.lock");
-        DeploymentBundle.RequireRegularPath(lockPath);
+        using var diagnostics = new DeploymentJournalOperation(LockPath, operation, _logger);
         FileStream? held = null;
-        var deadline = DateTime.UtcNow.AddSeconds(10);
-        while (held is null)
+        try
         {
-            try
+            DeploymentBundle.RequireRegularPath(Root);
+            Directory.CreateDirectory(Root);
+            DeploymentBundle.RequireRegularPath(LockPath);
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (held is null)
             {
-                held = new(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+                try
+                {
+                    held = new(LockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+                }
+                catch (IOException) when (DateTime.UtcNow < deadline)
+                {
+                    diagnostics.Waiting();
+                    Thread.Sleep(20);
+                }
             }
-            catch (IOException) when (DateTime.UtcNow < deadline)
-            {
-                Thread.Sleep(20);
-            }
-        }
-        using (held)
-        {
+
+            diagnostics.Acquired();
             var path = Path.Combine(Root, "state.json");
             DeploymentBundle.RequireRegularPath(path);
-            var state = File.Exists(path)
-                ? JsonSerializer.Deserialize<DeploymentState>(File.ReadAllBytes(path), DeploymentJson.Options)
+            var bytes = File.Exists(path) ? File.ReadAllBytes(path) : null;
+            diagnostics.Stage = "DeserializingJournal";
+            var state = bytes is not null
+                ? JsonSerializer.Deserialize<DeploymentState>(bytes, DeploymentJson.Options)
                     ?? throw new InvalidDataException("Deployment journal is empty.")
                 : new DeploymentState();
             if (state.Version != 1)
@@ -79,13 +88,31 @@ public sealed class DeploymentStore(string root)
                 throw new InvalidDataException("Unsupported deployment journal version.");
             }
 
+            _logger.LogDebug("Deployment journal read: {JournalBytes} bytes, {PackageCount} packages, {ReportCount} reports, batch={BatchId}, phase={Phase}",
+                bytes?.Length ?? 0, state.Packages.Count, state.Reports.Count, state.Batch?.Approval.BatchId, state.Batch?.Phase);
+            diagnostics.Stage = "ApplyingOperation";
             var result = action(state);
             if (save)
             {
-                DeploymentBundle.AtomicWrite(path, JsonSerializer.SerializeToUtf8Bytes(state, DeploymentJson.Options));
+                diagnostics.Stage = "SerializingJournal";
+                var updated = JsonSerializer.SerializeToUtf8Bytes(state, DeploymentJson.Options);
+                diagnostics.Stage = $"WritingJournal ({updated.Length} bytes)";
+                DeploymentBundle.AtomicWrite(path, updated);
             }
 
+            diagnostics.Stage = "Completed";
             return result;
+        }
+        catch (Exception ex)
+        {
+            diagnostics.Failed(ex);
+            throw;
+        }
+        finally
+        {
+            // Unregister before releasing the file so the next owner cannot be removed here.
+            diagnostics.Release();
+            held?.Dispose();
         }
     }
 
@@ -157,6 +184,7 @@ public sealed class DeploymentStore(string root)
                 return false;
             }
 
+            DeploymentJournalOperation.SetStage(LockPath, $"SavingBundle {m.DeploymentId} ({bytes.Length} bytes)");
             DeploymentBundle.AtomicWrite(BundlePath(m.DeploymentId), bytes);
             package.Manifest = m;
             SetStatus(s, package, "AwaitingApproval", null);
@@ -186,6 +214,7 @@ public sealed class DeploymentStore(string root)
 
         foreach (var p in packages)
         {
+            DeploymentJournalOperation.SetStage(LockPath, $"ValidatingApprovalBundle {p.Notice.DeploymentId}");
             DeploymentBundle.Read(File.ReadAllBytes(BundlePath(p.Notice.DeploymentId)), p.Notice.BundleSha256!, p.Notice.MaxBytes, p.Notice.MaxFiles);
         }
         var request = new DeploymentApproval(Guid.NewGuid(), packages.Select(p => new PackageApproval(p.Notice.DeploymentId, p.Notice.BundleSha256!)).ToList());
@@ -275,6 +304,7 @@ public sealed class DeploymentStore(string root)
                 if (Guid.TryParseExact(Path.GetFileNameWithoutExtension(file), "N", out var id) && !keep.Contains(id))
                 {
                     DeploymentBundle.RequireRegularPath(file);
+                    DeploymentJournalOperation.SetStage(LockPath, $"DeletingBundle {id}");
                     File.Delete(file);
                 }
             }
@@ -293,6 +323,7 @@ public sealed class DeploymentStore(string root)
             if (Guid.TryParseExact(Path.GetFileName(path), "N", out var id) && id != active)
             {
                 DeploymentBundle.RequireRegularPath(path);
+                DeploymentJournalOperation.SetStage(LockPath, $"DeletingWorkDirectory {id}");
                 Directory.Delete(path, true);
             }
         }

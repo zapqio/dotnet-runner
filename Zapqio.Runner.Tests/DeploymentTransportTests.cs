@@ -51,7 +51,10 @@ public sealed class DeploymentTransportTests
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
-            throw new ApplicationException("Unexpected download worker failure.");
+            if (logLevel == LogLevel.Warning)
+            {
+                throw new ApplicationException("Unexpected download worker failure.");
+            }
         }
     }
 

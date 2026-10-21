@@ -76,10 +76,15 @@ namespace Zapqio.Runner.Background
         /// </summary>
         public override async Task StopAsync(CancellationToken cancellationToken)
         {
+            _logger.LogInformation("Runner connection shutdown starting; runningJobs={RunningJobs}, socketConnected={Connected}",
+                _scheduler.Running, _client.Connected());
             _stopping = true;
             _scheduler.CompleteAdding();
 
-            var timeout = TimeSpan.FromSeconds(_deployments?.RestartRequested == true ? 0 : _settings.StopTimeoutSeconds);
+            var restartRequested = _deployments?.RestartRequested == true;
+            var timeout = TimeSpan.FromSeconds(restartRequested ? 0 : _settings.StopTimeoutSeconds);
+            _logger.LogInformation("Runner shutdown mode: deploymentRestart={DeploymentRestart}, drainTimeoutSeconds={DrainTimeoutSeconds}",
+                restartRequested, timeout.TotalSeconds);
             if (_scheduler.Running > 0)
             {
                 _logger.LogInformation(
@@ -97,6 +102,7 @@ namespace Zapqio.Runner.Background
             await WaitForOutboxAsync(timeout);
             await _client.CloseAsync(cancellationToken);
             await base.StopAsync(cancellationToken);
+            _logger.LogInformation("Runner connection shutdown finished");
         }
 
         /// <summary>Czeka, aż nadawca wyśle wszystko, co zakolejkowano - dopóki gniazdo żyje i mieści się w limicie.</summary>

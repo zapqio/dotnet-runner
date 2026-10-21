@@ -28,9 +28,14 @@ public sealed class DeploymentInstaller(DeploymentStore store, string modulesRoo
     // True requires a fresh process: assemblies may already have entered the default load context.
     public async Task<bool> StartAsync(CancellationToken ct)
     {
+        var elapsed = Stopwatch.StartNew();
         var state = store.Read();
+        logger?.LogInformation("Deployment installer starting: batch={BatchId}, phase={Phase}, installedModules={InstalledCount}",
+            state.Batch?.Approval.BatchId, state.Batch?.Phase, state.Installed.Count);
         if (state.Batch is { Phase: "Preparing" or "Switching" or "Loading" } interrupted)
         {
+            logger?.LogWarning("Recovering interrupted deployment: batch={BatchId}, phase={Phase}",
+                interrupted.Approval.BatchId, interrupted.Phase);
             if (interrupted.Phase is "Switching" or "Loading")
             {
                 Restore(interrupted);
@@ -43,7 +48,9 @@ public sealed class DeploymentInstaller(DeploymentStore store, string modulesRoo
 
         if (state.Batch is not { Phase: "Approved" } batch)
         {
+            logger?.LogInformation("Loading existing modules; no approved deployment batch");
             modules.Load(state.Installed, false);
+            logger?.LogInformation("Existing modules loaded; elapsedMs={ElapsedMs}", elapsed.ElapsedMilliseconds);
             return false;
         }
 
@@ -56,7 +63,9 @@ public sealed class DeploymentInstaller(DeploymentStore store, string modulesRoo
         {
             s.Batch!.Previous = s.Installed.ToList();
             s.Batch.Phase = "Preparing";
-        });
+        }, "Installer.Preparing");
+        logger?.LogInformation("Deployment batch preparing: batch={BatchId}, packageCount={PackageCount}",
+            batch.Approval.BatchId, batch.Approval.Packages.Count);
         try
         {
             var selected = batch.Approval.Packages.Select(p => state.Packages.Single(d => d.Notice.DeploymentId == p.DeploymentId)).ToList();
@@ -69,6 +78,8 @@ public sealed class DeploymentInstaller(DeploymentStore store, string modulesRoo
             foreach (var p in selected)
             {
                 ct.ThrowIfCancellationRequested();
+                logger?.LogInformation("Preparing deployment package: batch={BatchId}, deployment={DeploymentId}, package={PackageName}, action={Action}, contentKind={ContentKind}",
+                    batch.Approval.BatchId, p.Notice.DeploymentId, p.Manifest?.PackageName, p.Manifest?.Action, p.Manifest?.ContentKind);
                 var approval = batch.Approval.Packages.Single(a => a.DeploymentId == p.Notice.DeploymentId);
                 var decoded = DeploymentBundle.Read(await File.ReadAllBytesAsync(store.BundlePath(approval.DeploymentId), ct),
                     approval.BundleSha256, p.Notice.MaxBytes, p.Notice.MaxFiles);
@@ -83,11 +94,14 @@ public sealed class DeploymentInstaller(DeploymentStore store, string modulesRoo
                     continue;
                 }
 
+                var preparation = Stopwatch.StartNew();
                 var bytes = decoded.Manifest.ContentKind == "DotnetSource"
                     ? await build.PublishAsync(decoded, Path.Combine(work, p.Notice.DeploymentId.ToString("N")), p.Notice.MaxBytes, p.Notice.MaxFiles, ct)
                     : decoded.Payload;
                 DeploymentBundle.ValidateModule(DeploymentBundle.ReadZip(bytes, p.Notice.MaxBytes, p.Notice.MaxFiles));
                 prepared.Add(decoded.Manifest.PackageName, bytes);
+                logger?.LogInformation("Deployment package prepared: deployment={DeploymentId}, package={PackageName}, bytes={ModuleBytes}, elapsedMs={ElapsedMs}",
+                    p.Notice.DeploymentId, decoded.Manifest.PackageName, bytes.Length, preparation.ElapsedMilliseconds);
             }
             var backups = new List<ModuleBackup>();
             var backupRoot = Path.Combine(work, "backup");
@@ -112,12 +126,16 @@ public sealed class DeploymentInstaller(DeploymentStore store, string modulesRoo
             {
                 s.Batch!.Backups = backups;
                 s.Batch.Phase = "Switching";
-            });
+            }, "Installer.Switching");
+            logger?.LogInformation("Deployment backups saved; switching packages: batch={BatchId}, backupCount={BackupCount}",
+                batch.Approval.BatchId, backups.Count);
             switchingStarted = true;
             var installed = state.Installed.ToList();
             foreach (var p in selected)
             {
                 var m = p.Manifest!;
+                logger?.LogInformation("Switching deployment package: batch={BatchId}, deployment={DeploymentId}, package={PackageName}, action={Action}",
+                    batch.Approval.BatchId, m.DeploymentId, m.PackageName, m.Action);
                 var path = ModulePath(m.PackageName);
                 installed.RemoveAll(i => i.Manifest.RepositoryId == m.RepositoryId || string.Equals(i.Manifest.PackageName, m.PackageName, StringComparison.OrdinalIgnoreCase));
                 if (m.Action == "Withdraw")
@@ -131,13 +149,18 @@ public sealed class DeploymentInstaller(DeploymentStore store, string modulesRoo
                     installed.Add(new(m, DeploymentBundle.Hash(bytes)));
                 }
             }
-            store.Edit(s => s.Batch!.Phase = "Loading");
+            store.Edit(s => s.Batch!.Phase = "Loading", "Installer.Loading");
             loadingStarted = true;
+            logger?.LogInformation("Loading and validating deployment modules: batch={BatchId}", batch.Approval.BatchId);
             modules.Load(installed, true);
             store.Finish("Applied", null, installed);
+            logger?.LogInformation("Deployment batch applied: batch={BatchId}, elapsedMs={ElapsedMs}",
+                batch.Approval.BatchId, elapsed.ElapsedMilliseconds);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
+            logger?.LogError(ex, "Deployment installation failed: batch={BatchId}, switchingStarted={SwitchingStarted}, loadingStarted={LoadingStarted}, elapsedMs={ElapsedMs}",
+                batch.Approval.BatchId, switchingStarted, loadingStarted, elapsed.ElapsedMilliseconds);
             var latest = store.Read().Batch!;
             if (switchingStarted)
             {
@@ -152,6 +175,8 @@ public sealed class DeploymentInstaller(DeploymentStore store, string modulesRoo
             }
 
             Cleanup(batch.Approval.BatchId);
+            logger?.LogWarning("Deployment failure recorded; previous package set restored or unchanged: batch={BatchId}, needsRestart={NeedsRestart}",
+                batch.Approval.BatchId, loadingStarted);
             return loadingStarted;
         }
         Cleanup(batch.Approval.BatchId);
@@ -160,6 +185,8 @@ public sealed class DeploymentInstaller(DeploymentStore store, string modulesRoo
 
     private void Restore(LocalBatch batch)
     {
+        logger?.LogWarning("Restoring deployment backups: batch={BatchId}, backupCount={BackupCount}",
+            batch.Approval.BatchId, batch.Backups.Count);
         foreach (var backup in batch.Backups)
         {
             var path = ModulePath(backup.PackageName);
@@ -180,6 +207,7 @@ public sealed class DeploymentInstaller(DeploymentStore store, string modulesRoo
                 DeploymentBundle.AtomicWrite(path, bytes);
             }
         }
+        logger?.LogInformation("Deployment backups restored: batch={BatchId}", batch.Approval.BatchId);
     }
 
     private void Cleanup(Guid batch)
