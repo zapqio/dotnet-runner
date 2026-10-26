@@ -87,6 +87,54 @@ public sealed class DeploymentStoreTests : IDisposable
         Store.Acknowledge(new([new(a.Notice.DeploymentId, 1)]));
         Assert.Empty(Store.Read().Reports);
     }
+
+    [Fact]
+    public void Repeated_notices_and_unmatched_ack_do_not_rewrite_the_journal_but_changes_are_persisted()
+    {
+        var package = Package(Guid.NewGuid(), 1);
+        Store.Observe(package.Notice);
+        var journal = Path.Combine(_root, "state.json");
+        var original = File.ReadAllBytes(journal);
+        var timestamp = new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(journal, timestamp);
+
+        // Reopen the store as the CLI does; the comparison must use the disk state.
+        Assert.True(Store.Observe(package.Notice));
+        Store.Acknowledge(new([new(package.Notice.DeploymentId, 99)]));
+        Store.Edit(_ => { });
+        Assert.Equal(timestamp, File.GetLastWriteTimeUtc(journal));
+        Assert.Equal(original, File.ReadAllBytes(journal));
+
+        var changed = package.Notice with { BundleUrl = "changed" };
+        Store.Observe(changed);
+        Assert.NotEqual(timestamp, File.GetLastWriteTimeUtc(journal));
+        Assert.Equal("changed", Assert.Single(Store.Read().Packages).Notice.BundleUrl);
+    }
+
+    [Fact]
+    public void Cleanup_removes_unused_files_without_writing_the_journal_or_removing_pending_bundles()
+    {
+        var package = Package(Guid.NewGuid(), 1);
+        Store.Observe(package.Notice);
+        Store.Receive(package.Notice, package.Bytes);
+        var orphan = Store.BundlePath(Guid.NewGuid());
+        File.WriteAllText(orphan, "orphan");
+        var work = Directory.CreateDirectory(Store.WorkPath(Guid.NewGuid())).FullName;
+        File.WriteAllText(Path.Combine(work, "old.txt"), "old work");
+        var journal = Path.Combine(_root, "state.json");
+        var original = File.ReadAllBytes(journal);
+        var timestamp = new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(journal, timestamp);
+
+        Store.Cleanup();
+
+        Assert.False(File.Exists(orphan));
+        Assert.False(Directory.Exists(work));
+        Assert.True(File.Exists(Store.BundlePath(package.Notice.DeploymentId)));
+        Assert.Equal(timestamp, File.GetLastWriteTimeUtc(journal));
+        Assert.Equal(original, File.ReadAllBytes(journal));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_root))

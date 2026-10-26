@@ -58,6 +58,21 @@ public sealed class DeploymentTransportTests
         }
     }
 
+    private sealed class ReportingLogger : ILogger<DeploymentCoordinator>
+    {
+        public TaskCompletionSource Deferred { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (exception is DeploymentJournalBusyException && formatter(state, exception).StartsWith("Deployment reporting deferred:"))
+            {
+                Deferred.TrySetResult();
+            }
+        }
+    }
+
     [WindowsDeploymentFact]
     public async Task Unexpected_failure_of_either_worker_reaches_the_background_service()
     {
@@ -120,7 +135,7 @@ public sealed class DeploymentTransportTests
     [WindowsDeploymentFact]
     public async Task Http_delivery_reconnect_version_replay_and_online_approval_use_the_real_transport()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         var root = Path.Combine(Path.GetTempPath(), "sr3-transport-" + Guid.NewGuid().ToString("N"));
         var store = new DeploymentStore(Path.Combine(root, "Deployments"));
         var manifest = new DeploymentManifest
@@ -220,8 +235,9 @@ public sealed class DeploymentTransportTests
         await using var client = new WSClient(settings, NullLogger<WSClient>.Instance, methods, outbox, process, pending);
         using var sender = new OutboundSender(outbox, client, NullLogger<OutboundSender>.Instance);
         var restart = new Restart();
+        var reporting = new ReportingLogger();
         using var deployments = new DeploymentCoordinator(store, methods, client, settings, new Lifetime(),
-            NullLogger<DeploymentCoordinator>.Instance, restart, modules.FullName);
+            reporting, restart, modules.FullName);
         var scheduler = new JobScheduler(1, _ => Task.CompletedTask, _ => Task.CompletedTask, client.SendQueryOnJob,
             NullLogger<JobScheduler>.Instance, process);
         using var binder = new RequestBindBackground(client, NullLogger<RequestBindBackground>.Instance, pending, scheduler,
@@ -283,6 +299,38 @@ public sealed class DeploymentTransportTests
             Assert.Equal(result.AttemptId, replay.AttemptId);
             Assert.Equal(version, replay.ExecutionVersion);
             var approval = store.RequestApproval(null);
+
+            // Reproduce backup-time contention with the real file lock and a live socket.
+            // Both Cleanup and Read/ReportLoop exceed the production 10-second timeout.
+            using var release = new ManualResetEventSlim();
+            var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var holding = Task.Run(() => store.Edit(_ =>
+            {
+                entered.TrySetResult();
+                if (!release.Wait(TimeSpan.FromSeconds(40)))
+                {
+                    throw new TimeoutException("Test did not release the journal lock.");
+                }
+            }, "BackupHoldProbe"));
+            try
+            {
+                await entered.Task.WaitAsync(deadline.Token);
+                await reporting.Deferred.Task.WaitAsync(deadline.Token);
+                Assert.False(deployments.ExecuteTask!.IsCompleted);
+                Assert.False(deployments.RestartRequested);
+                Assert.False(restart.Called.Task.IsCompleted);
+                // Discard any approval sent just before the holder acquired the lock.
+                // The assertion below must observe a new report after recovery.
+                while (received.Reader.TryRead(out _))
+                {
+                }
+            }
+            finally
+            {
+                release.Set();
+                await holding;
+            }
+
             var requested = (await Read<DeploymentApproval>(MessageType.DeploymentApproval)).Data;
             Assert.Equal(approval.BatchId, requested.BatchId);
             Assert.Equal(notice.BundleSha256, requested.Packages.Single().BundleSha256);

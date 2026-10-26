@@ -54,9 +54,22 @@ etapy pobierania, instalacji i rollbacku oraz przyczynę restartu. Nie trzeba w�
 - `Deployment journal lock still held` — co 5 sekund informuje o nadal trzymanej blokadzie,
   np. podczas `SavingBundle`, `ValidatingApprovalBundle` lub `WritingJournal`.
 - `Deployment journal operation failed` — pełny wyjątek, etap, czas i właściciel blokady.
-  Limit oczekiwania nadal wynosi 10 sekund; diagnostyka nie zmienia obsługi błędów ani restartu.
+  Limit oczekiwania nadal wynosi 10 sekund. Oczekiwanie pętli raportowania i sprzątania
+  jest przerywane przy zatrzymywaniu hosta.
+- `Deployment reporting deferred: journal is busy` — pętla nie uzyskała blokady;
+  runner działa dalej i ponawia odczyt po 2 sekundach. Raporty i zatwierdzenia pozostają
+  w dzienniku. Uszkodzony dziennik nie jest traktowany jako przejściowa blokada.
 - `Deployment worker ... failed` i `Deployment coordinator failed` — wskazują pętlę,
-  z której wyjątek dotarł do hosta. Kolejne wpisy pokazują przebieg zatrzymywania połączenia.
+  z której wyjątek dotarł do hosta.
+- `Runner background service ... failed; process exit code=1` — nieobsłużona awaria
+  zadania w tle. W trybie Windows Service proces kończy się kodem 1 przed zgłoszeniem
+  prawidłowego zatrzymania do SCM, aby mogły zadziałać skonfigurowane akcje odzyskiwania
+  usługi. Instalator ustawia ponowienia po 5, 30 i 60 sekundach. Zwykłe zatrzymanie
+  i restart po zatwierdzonym wdrożeniu nadal kończą się kodem 0.
+
+Sprzątanie nie zapisuje `state.json`, a powtórzone komunikaty nie zapisują go ponownie,
+jeśli zawartość się nie zmieniła. Rzeczywiste zmiany nadal są zapisywane atomowo
+z wymuszeniem zapisu na dysk; blokada obejmuje cały odczyt i zmianę stanu.
 
 CLI zapisuje diagnostykę do `deployments-cli-YYYYMMDD.log` w katalogu `Logger:PathDirectory`
 (zwykle `Logs`). Jest to osobny plik, aby nie zmieniać wyjścia polecenia `deploy show` ani

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Logging.Abstractions;
 using Zapqio.Deployments;
@@ -43,15 +44,18 @@ public sealed class DeploymentStore(string root, ILogger<DeploymentStore>? logge
     public string BundlePath(Guid id) => Path.Combine(Root, "bundles", id.ToString("N") + ".zip");
     public string WorkPath(Guid batch) => Path.Combine(Root, "work", batch.ToString("N"));
 
-    public DeploymentState Read([CallerMemberName] string caller = "") => Access(s => s, save: false, "Read/" + caller);
+    public DeploymentState Read([CallerMemberName] string caller = "", CancellationToken cancellationToken = default) =>
+        Access(s => s, save: false, "Read/" + caller, cancellationToken);
     public T Edit<T>(Func<DeploymentState, T> action, [CallerMemberName] string operation = "") => Access(action, save: true, operation);
-    public void Edit(Action<DeploymentState> action, [CallerMemberName] string operation = "") => Edit(s =>
+    public void Edit(Action<DeploymentState> action, [CallerMemberName] string operation = "") => Access(action, save: true, operation);
+
+    private void Access(Action<DeploymentState> action, bool save, string operation, CancellationToken cancellationToken = default) => Access(s =>
     {
         action(s);
         return true;
-    }, operation);
+    }, save, operation, cancellationToken);
 
-    private T Access<T>(Func<DeploymentState, T> action, bool save, string operation)
+    private T Access<T>(Func<DeploymentState, T> action, bool save, string operation, CancellationToken cancellationToken = default)
     {
         using var diagnostics = new DeploymentJournalOperation(LockPath, operation, _logger);
         FileStream? held = null;
@@ -60,20 +64,27 @@ public sealed class DeploymentStore(string root, ILogger<DeploymentStore>? logge
             DeploymentBundle.RequireRegularPath(Root);
             Directory.CreateDirectory(Root);
             DeploymentBundle.RequireRegularPath(LockPath);
-            var deadline = DateTime.UtcNow.AddSeconds(10);
+            var waiting = Stopwatch.StartNew();
             while (held is null)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 try
                 {
                     held = new(LockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
                 }
-                catch (IOException) when (DateTime.UtcNow < deadline)
+                catch (IOException ex)
                 {
+                    if (waiting.Elapsed >= TimeSpan.FromSeconds(10))
+                    {
+                        throw new DeploymentJournalBusyException(LockPath, ex);
+                    }
+
                     diagnostics.Waiting();
-                    Thread.Sleep(20);
+                    cancellationToken.WaitHandle.WaitOne(20);
                 }
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             diagnostics.Acquired();
             var path = Path.Combine(Root, "state.json");
             DeploymentBundle.RequireRegularPath(path);
@@ -96,8 +107,13 @@ public sealed class DeploymentStore(string root, ILogger<DeploymentStore>? logge
             {
                 diagnostics.Stage = "SerializingJournal";
                 var updated = JsonSerializer.SerializeToUtf8Bytes(state, DeploymentJson.Options);
-                diagnostics.Stage = $"WritingJournal ({updated.Length} bytes)";
-                DeploymentBundle.AtomicWrite(path, updated);
+                // Replayed notices and ACKs often leave the journal unchanged. Avoid another
+                // durable flush under the lock, especially while a backup delays disk writes.
+                if (bytes is null || !bytes.AsSpan().SequenceEqual(updated))
+                {
+                    diagnostics.Stage = $"WritingJournal ({updated.Length} bytes)";
+                    DeploymentBundle.AtomicWrite(path, updated);
+                }
             }
 
             diagnostics.Stage = "Completed";
@@ -291,7 +307,7 @@ public sealed class DeploymentStore(string root, ILogger<DeploymentStore>? logge
         s.Reports.Add(new(b.Approval.BatchId, items));
     });
 
-    public void Cleanup() => Edit(s =>
+    public void Cleanup(CancellationToken cancellationToken = default) => Access(s =>
     {
         var keep = s.Packages.Where(p => p.Status is "Pending" or "AwaitingApproval" || Pinned(s, p.Notice.DeploymentId))
             .Select(p => p.Notice.DeploymentId).ToHashSet();
@@ -327,7 +343,7 @@ public sealed class DeploymentStore(string root, ILogger<DeploymentStore>? logge
                 Directory.Delete(path, true);
             }
         }
-    });
+    }, save: false, nameof(Cleanup), cancellationToken);
 
     public bool RestartRequested => Read().Batch?.Phase == "Approved";
 }

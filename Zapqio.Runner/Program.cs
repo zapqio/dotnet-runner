@@ -1,4 +1,5 @@
 using Serilog;
+using Microsoft.Extensions.Hosting.WindowsServices;
 using System.Runtime.InteropServices;
 using Zapqio.Runner.Background;
 using Zapqio.Runner.Core;
@@ -126,8 +127,12 @@ namespace Zapqio.Runner
                 logger.LogWarning("Runner shutdown requested; stopping hosted services"));
             using var stoppedLog = lifetime.ApplicationStopped.Register(() =>
                 logger.LogInformation("Runner hosted services stopped"));
+            Action<int>? terminateOnFailure = OperatingSystem.IsWindows() && WindowsServiceHelpers.IsWindowsService()
+                ? Environment.Exit : null;
             try
             {
+                using var failures = new RunnerFailureMonitor(host.Services.GetServices<IHostedService>(), lifetime,
+                    host.Services.GetRequiredService<ILogger<RunnerFailureMonitor>>(), terminateOnFailure);
                 logger.LogInformation("Runner starting: version={Version}, runtime={Runtime}, baseDirectory={BaseDirectory}, account={Account}",
                     typeof(Program).Assembly.GetName().Version, RuntimeInformation.FrameworkDescription,
                     AppContext.BaseDirectory, $"{Environment.UserDomainName}\\{Environment.UserName}");
@@ -144,12 +149,14 @@ namespace Zapqio.Runner
                     settings.RemoteLogThreshold, settings.MaxQueuedLogLines);
                 await host.StartAsync();
                 await host.WaitForShutdownAsync();
-                logger.LogInformation("Runner host finished; process exit code=0");
-                return 0;
+                var exitCode = failures.ExitCode;
+                logger.LogInformation("Runner host finished; process exit code={ExitCode}", exitCode);
+                return exitCode;
             }
             catch (Exception ex)
             {
                 logger.LogCritical(ex, "Runner startup or shutdown failed; exception will terminate the process");
+                terminateOnFailure?.Invoke(1);
                 throw;
             }
         }

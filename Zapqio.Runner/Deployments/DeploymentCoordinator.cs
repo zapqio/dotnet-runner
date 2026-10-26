@@ -16,11 +16,13 @@ public sealed class DeploymentCoordinator(DeploymentStore store, MethodsProvider
     private readonly Channel<DeploymentNotice> _downloads = Channel.CreateBounded<DeploymentNotice>(new BoundedChannelOptions(200)
     { SingleReader = true, FullMode = BoundedChannelFullMode.DropOldest });
     private volatile bool _online;
-    private bool _restarting;
+    private volatile bool _restarting;
     private Guid? _reportedBatch;
     private string? _reportedPhase;
     public Task Ready => _ready.Task;
-    public bool RestartRequested => _restarting || OperatingSystem.IsWindows() && store.RestartRequested;
+    // Shutdown must not wait for the journal lock. Only a successfully launched
+    // restart helper permits skipping the normal job drain.
+    public bool RestartRequested => _restarting;
     public void Connected() => _online = true;
     public void Disconnected() => _online = false;
 
@@ -163,7 +165,7 @@ public sealed class DeploymentCoordinator(DeploymentStore store, MethodsProvider
         {
             try
             {
-                store.Cleanup();
+                store.Cleanup(ct);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
@@ -172,7 +174,18 @@ public sealed class DeploymentCoordinator(DeploymentStore store, MethodsProvider
 
             if (_online && client.Connected())
             {
-                var state = store.Read();
+                DeploymentState state;
+                try
+                {
+                    state = store.Read(cancellationToken: ct);
+                }
+                catch (DeploymentJournalBusyException ex)
+                {
+                    logger.LogWarning(ex, "Deployment reporting deferred: journal is busy; retrying in 2 seconds");
+                    await Task.Delay(TimeSpan.FromSeconds(2), ct);
+                    continue;
+                }
+
                 if (state.Batch?.Approval.BatchId != _reportedBatch || state.Batch?.Phase != _reportedPhase)
                 {
                     _reportedBatch = state.Batch?.Approval.BatchId;
@@ -226,7 +239,7 @@ public sealed class DeploymentCoordinator(DeploymentStore store, MethodsProvider
             {
                 return;
             }
-            catch (Exception ex) when (ex is HttpRequestException or IOException or InvalidDataException or OperationCanceledException or InvalidOperationException)
+            catch (Exception ex) when (ex is HttpRequestException or IOException or UnauthorizedAccessException or InvalidDataException or OperationCanceledException or InvalidOperationException)
             {
                 // A transient network failure leaves Pending; periodic notices retry it.
                 // Malformed or damaged contents are explicitly rejected.

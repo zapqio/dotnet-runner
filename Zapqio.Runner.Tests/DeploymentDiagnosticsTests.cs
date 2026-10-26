@@ -97,13 +97,14 @@ public sealed class DeploymentDiagnosticsTests : IDisposable
         var logger = new RecordingLogger();
         var store = new DeploymentStore(_root, logger);
         store.Read();
-        IOException error;
+        DeploymentJournalBusyException error;
         using (var held = new FileStream(Path.Combine(_root, "state.lock"), FileMode.Open,
             FileAccess.ReadWrite, FileShare.None))
         {
-            error = await Assert.ThrowsAsync<IOException>(() => Task.Run(() => store.Read("TimeoutProbe")));
+            error = await Assert.ThrowsAsync<DeploymentJournalBusyException>(() => Task.Run(() => store.Read("TimeoutProbe")));
         }
 
+        Assert.IsType<IOException>(error.InnerException);
         var entry = Assert.Single(logger.Entries, e => ReferenceEquals(e.Exception, error));
         Assert.Equal(LogLevel.Error, entry.Level);
         Assert.Equal("Read/TimeoutProbe", entry.Properties["Operation"]);
@@ -111,6 +112,28 @@ public sealed class DeploymentDiagnosticsTests : IDisposable
         Assert.Contains("unknown", Assert.IsType<string>(entry.Properties["Owner"]));
         Assert.True(Assert.IsType<long>(entry.Properties["ElapsedMs"]) >= 9000);
         Assert.Empty(store.Read().Packages);
+    }
+
+    [Fact]
+    public async Task Shutdown_cancels_a_pending_lock_wait_without_waiting_for_the_timeout()
+    {
+        var logger = new RecordingLogger();
+        var store = new DeploymentStore(_root, logger);
+        store.Read();
+        using var held = new FileStream(Path.Combine(_root, "state.lock"), FileMode.Open,
+            FileAccess.ReadWrite, FileShare.None);
+        using var cancellation = new CancellationTokenSource();
+        var reading = Task.Run(() => store.Read(cancellationToken: cancellation.Token));
+        try
+        {
+            await logger.LockWait.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            cancellation.Cancel();
+        }
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => reading.WaitAsync(TimeSpan.FromSeconds(2)));
     }
 
     [Fact]
