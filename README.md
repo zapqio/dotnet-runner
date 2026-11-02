@@ -1,5 +1,7 @@
 # Zapqio Runner (.NET)
 
+**Polski** | [English](./README.en.md)
+
 Runner wykonuje metody modułów .NET na komputerze lub serwerze Windows.
 Łączy się z instancją Zapq przez WebSocket, odbiera zadania i odsyła wyniki oraz logi.
 Działa jako usługa Windows.
