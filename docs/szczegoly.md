@@ -1,7 +1,8 @@
 # Obsługa runnera
 
-Instalacja jest w [README](../README.md), pisanie modułów w [moduly.md](./moduly.md),
-wdrożenia modułów z platformy w [wdrozenia.md](./wdrozenia.md).
+Aktualna [instrukcja instalacji runnera](https://docs.zapq.io/pl/guides/runners) jest w dokumentacji Zapq.
+Pisanie modułów opisuje [moduly.md](./moduly.md), a techniczne szczegóły ich instalowania
+z platformy znajdziesz w [wdrozenia.md](./wdrozenia.md).
 
 ## Konfiguracja
 

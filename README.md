@@ -1,129 +1,35 @@
 # Zapqio Runner (.NET)
 
-Runner łączy się z instancją **Web** Zapqio przez WebSocket i wykonuje zlecane przez nią zadania.
-Działa jako usługa Windows. Paczki: [GitHub Releases](https://github.com/zapqio/dotnet-runner/releases).
-
-Dalsza dokumentacja:
-
-- [Obsługa runnera](./docs/szczegoly.md) — konfiguracja, usługa, logi, aktualizacja, problemy,
-- [Wdrożenia z platformy](./docs/wdrozenia.md) — zatwierdzanie wdrożeń modułów (`deploy`),
-- [Pisanie modułów](./docs/moduly.md) — jak dostarczyć runnerowi metody.
-
-## Jak to działa
-
-- Runner łączy się z `{Url}/ws-runner`, loguje tokenem i nazwą, ogłasza swoje metody, a potem
-  odbiera zadania i odsyła wyniki. Niczego nie nasłuchuje — wystarczy ruch wychodzący.
-- **Metody dostarczają moduły** — paczki `.zip` w katalogu `Modules`. Bez modułów runner się
-  połączy, ale nie będzie miał nic do zrobienia.
-- Domyślnie wykonuje jedno zadanie naraz (zmienisz to kluczem `MaxConcurrency`). To, co metoda
-  wypisze, trafia na żywo do logów zadania w panelu Web.
-- Zerwane połączenie odnawia sam (co 3 s → 60 s). Wynik, którego nie zdążył odesłać, wysyła po
-  ponownym połączeniu.
-
-## Wymagania
-
-- **Windows x64** — Windows 10 (1607+), Windows 11 lub Windows Server 2012 R2+.
-- **.NET Desktop Runtime 8 (x64)** — `winget install Microsoft.DotNet.DesktopRuntime.8`.
-  Wersja *Desktop* jest konieczna; sam .NET Runtime nie wystarczy.
-- Uprawnienia administratora.
-- Dostęp wychodzący do instancji Web (`wss://`, zwykle TCP 443).
-
-> **.NET 10:** `install.ps1 -Net10` instaluje wariant pod .NET Desktop Runtime 10
-> (`winget install Microsoft.DotNet.DesktopRuntime.10`). Domyślny jest .NET 8, bo moduł nexo
-> korzysta z bibliotek InsERT-a, które od .NET 9 się nie ładują. Bez takich modułów możesz
-> wybrać `-Net10`.
+Runner wykonuje metody modułów .NET na komputerze lub serwerze Windows.
+Łączy się z instancją Zapq przez WebSocket, odbiera zadania i odsyła wyniki oraz logi.
+Działa jako usługa Windows.
 
 ## Instalacja
 
-### 1. Przygotuj nazwę instancji i token
+Aktualna instrukcja wraz ze zrzutami panelu znajduje się w dokumentacji Zapq:
 
-**Nazwa instancji** to ostatni segment adresu Twojej instancji Web: dla
-`https://app.zapq.io/testowa-instancja` jest to `testowa-instancja`.
+- [Instalacja runnera zewnętrznego po polsku](https://docs.zapq.io/pl/guides/runners)
+- [External runner installation in English](https://docs.zapq.io/guides/runners)
+- [Installation des externen Runners auf Deutsch](https://docs.zapq.io/de/guides/runners)
 
-![Nazwa instancji wybierana przy zakładaniu instancji](docs/screenshots/1.nazwa-instancji.png)
+Poradnik prowadzi przez wymagania .NET, dodanie runnera w panelu, token, adres
+instancji, instalator Windows i sprawdzenie połączenia. Obejmuje też konfigurację
+równoczesnych zadań, aktualizację i odinstalowanie.
 
-**Token** wygenerujesz w panelu Web: **Runnery** → **Dodaj**.
+Instalator i pliki programu pozostają w tym repozytorium:
 
-![Sekcja Runnery i przycisk Dodaj w panelu Web](docs/screenshots/2.dodawnie-runnera.png)
+- [Instalator Windows: install.ps1](./install.ps1)
+- [Wydania i paczki do pobrania](https://github.com/zapqio/dotnet-runner/releases)
 
-Nadaj runnerowi nazwę i **skopiuj token przed kliknięciem Zapisz** — później nie da się go już
-odczytać, można tylko wydać nowy.
+## Moduły
 
-![Formularz dodawania runnera — skopiuj token przed zapisaniem](docs/screenshots/3.konfig-runnera.png)
+Połączenie runnera nie udostępnia metod, dopóki nie zostanie wgrany moduł.
+Wgrywanie ze źródeł i CI, lokalne zatwierdzenie, restart oraz sprawdzenie wyniku
+opisuje [poradnik modułów runnera zewnętrznego](https://docs.zapq.io/pl/guides/external-runner-modules).
 
-Runner pojawi się na liście z białą nazwą — jeszcze nic się z nim nie połączyło.
+## Dokumentacja techniczna
 
-![Lista runnerów po dodaniu — runner jeszcze niepołączony](docs/screenshots/4.po-dodaniu.png)
-
-### 2. Uruchom instalator
-
-W PowerShellu **jako administrator**:
-
-```powershell
-$s = irm https://raw.githubusercontent.com/zapqio/dotnet-runner/main/install.ps1
-& ([scriptblock]::Create($s.TrimStart([char]0xFEFF)))
-```
-
-Skrypt najpierw zapyta o język instalacji: polski, angielski lub niemiecki (Enter = polski).
-Przed pobraniem paczki zapyta o katalog instalacji (Enter = `C:\zapqio\runner`) i nazwę usługi
-Windows (Enter = `ZapqioRunner`). Wpisz własną wartość, aby ją zmienić. Parametry `-InstallDir`
-i `-ServiceName` pomijają odpowiednie pytania.
-Następnie zapyta o nazwę instancji, token i nazwę runnera (Enter = wygenerowany UUID). Możesz je też
-podać od razu: dopisz `-Language pl -Instance moja-instancja -Token <token>` na końcu drugiej linii.
-Z klonu repozytorium: `.\install.ps1 -Instance moja-instancja -Token <token>`.
-
-Wybór języka możesz pominąć parametrem `-Language pl`, `-Language en` albo `-Language de`.
-W automatyzacji podaj jawnie `-Language`, `-InstallDir` i `-ServiceName`; gdy host nie pozwala
-na odczyt z konsoli (np. PowerShell z `-NonInteractive`), pominięte parametry zachowują wartości
-domyślne: polski, `C:\zapqio\runner` i `ZapqioRunner`.
-
-![Przebieg instalacji w konsoli](docs/screenshots/5.instalacja.png)
-
-Instalator pobiera paczkę, zapisuje `appsettings.json`, zakłada usługę pod wybraną nazwą i czeka, aż
-runner połączy się z Web. Po udanej instalacji nazwa runnera w panelu robi się zielona.
-
-![Runner połączony — nazwa w panelu na zielono](docs/screenshots/6.po-instalacji.png)
-
-### Parametry instalatora
-
-Wszystkie są opcjonalne.
-
-| Parametr | Opis |
-| --- | --- |
-| `-Language` | Język instalatora: `pl`, `en`, `de`. Bez parametru pojawia się menu; Enter wybiera polski. |
-| `-Instance` | Nazwa instancji; adres `wss://app.zapq.io/<nazwa>` trafia do `Url`. |
-| `-Url` | Pełny adres zamiast `-Instance`, np. lokalne `ws://…`. |
-| `-Token`, `-RunnerName` | Token i nazwa runnera (`Token`, `Name`). |
-| `-MaxConcurrency` | Ile zadań naraz (`MaxConcurrency`). |
-| `-LogLevel`, `-LogDirectory` | Poziom i katalog logów. Nie wyłączaj logów plikowych (`""`) — w usłudze to jedyny lokalny ślad. |
-| `-Version` | Konkretna wersja, np. `0.1.1`; domyślnie najnowsza. |
-| `-InstallDir` | Katalog instalacji, domyślnie `C:\zapqio\runner`. Bez parametru skrypt pyta o katalog; Enter zatwierdza domyślny. |
-| `-ServiceName` | Nazwa usługi, domyślnie `ZapqioRunner`. Bez parametru skrypt pyta o nazwę; Enter zatwierdza domyślną. |
-| `-Net10` | Wariant pod .NET 10. |
-| `-LocalSystem` | Usługa na koncie LocalSystem zamiast konta wirtualnego. |
-
-Klucze konfiguracji opisuje [Obsługa runnera](./docs/szczegoly.md#konfiguracja).
-
-### Co jeszcze ustawia instalator
-
-- **Konto usługi** `NT SERVICE\ZapqioRunner` (konto wirtualne, bez hasła) z prawem zapisu tylko
-  do katalogu instalacji. Jeśli moduły potrzebują zasobów sieciowych lub logowania Windows do bazy,
-  zmień je na konto domenowe:
-  `sc.exe config ZapqioRunner obj= "DOMENA\konto" password= "..."`.
-- **Restart po awarii** procesu: po 5 s, 30 s i 60 s. Zerwanego połączenia to nie dotyczy —
-  runner odnawia je sam.
-- **Ograniczony dostęp** do `appsettings.json` i `Config\` (zawierają sekrety): tylko SYSTEM,
-  administratorzy i konto usługi.
-
-Ponowne uruchomienie instalatora aktualizuje runnera i zachowuje konfigurację.
-
-## Odinstalowanie
-
-```powershell
-sc.exe stop ZapqioRunner
-sc.exe delete ZapqioRunner
-Remove-Item -Recurse -Force C:\zapqio\runner   # opcjonalnie; katalog zawiera token
-```
-
-W panelu Web usuń runnera albo unieważnij jego token — dopóki token jest ważny, można go użyć na
-innej maszynie.
+- [Konfiguracja, usługa, logi i diagnostyka](./docs/szczegoly.md)
+- [Mechanizm zatwierdzania i instalowania modułów](./docs/wdrozenia.md)
+- [Pisanie modułów .NET](./docs/moduly.md)
+- [Szablon modułu .NET](https://github.com/zapqio/dotnet_runner_template)
