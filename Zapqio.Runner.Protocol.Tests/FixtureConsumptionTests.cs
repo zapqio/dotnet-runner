@@ -5,8 +5,8 @@ namespace Zapqio.Runner.Protocol.Tests;
 
 /// <summary>
 /// PROTOCOL.md §10: an implementation conforms if it can <b>consume</b> every fixture such that,
-/// after full decoding, the logical content equals the fixture's documented content
-/// (fixtures/README.md). These tests read every canonical frame with the types in
+/// after full decoding, the logical content equals the fixture's expected content.
+/// These tests read every canonical frame with the types in
 /// Zapqio.Runner.Protocol and check the values that come out.
 /// </summary>
 public class FixtureConsumptionTests

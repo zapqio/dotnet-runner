@@ -1,37 +1,39 @@
 # Zapqio Runner (.NET)
 
-**Polski** | [English](./README.en.md)
+The runner executes .NET module methods on a Windows computer or server.
+It connects to a Zapq instance over WebSocket, receives tasks, and sends back results and logs.
+It runs as a Windows service.
 
-Runner wykonuje metody modułów .NET na komputerze lub serwerze Windows.
-Łączy się z instancją Zapq przez WebSocket, odbiera zadania i odsyła wyniki oraz logi.
-Działa jako usługa Windows.
+## Installation
 
-## Instalacja
+The latest instructions, including screenshots of the web panel, are available in the Zapq documentation:
 
-Aktualna instrukcja wraz ze zrzutami panelu znajduje się w dokumentacji Zapq:
-
-- [Instalacja runnera zewnętrznego po polsku](https://docs.zapq.io/pl/guides/runners)
 - [External runner installation in English](https://docs.zapq.io/guides/runners)
+- [Instalacja runnera zewnętrznego po polsku](https://docs.zapq.io/pl/guides/runners)
 - [Installation des externen Runners auf Deutsch](https://docs.zapq.io/de/guides/runners)
 
-Poradnik prowadzi przez wymagania .NET, dodanie runnera w panelu, token, adres
-instancji, instalator Windows i sprawdzenie połączenia. Obejmuje też konfigurację
-równoczesnych zadań, aktualizację i odinstalowanie.
+The guide covers .NET requirements, adding a runner in the web panel, the token,
+the instance URL, the Windows installer, and checking the connection. It also explains
+how to configure concurrent tasks, update the runner, and uninstall it.
 
-Instalator i pliki programu pozostają w tym repozytorium:
+The installer and program files remain available in this repository:
 
-- [Instalator Windows: install.ps1](./install.ps1)
-- [Wydania i paczki do pobrania](https://github.com/zapqio/dotnet-runner/releases)
+- [Windows installer: install.ps1](./install.ps1)
+- [Releases and downloads](https://github.com/zapqio/dotnet-runner/releases)
 
-## Moduły
+## Modules
 
-Połączenie runnera nie udostępnia metod, dopóki nie zostanie wgrany moduł.
-Wgrywanie ze źródeł i CI, lokalne zatwierdzenie, restart oraz sprawdzenie wyniku
-opisuje [poradnik modułów runnera zewnętrznego](https://docs.zapq.io/pl/guides/external-runner-modules).
+Connecting the runner does not make any methods available until a module is deployed.
+The [external runner modules guide (in Polish)](https://docs.zapq.io/pl/guides/external-runner-modules)
+covers deployment from source code and CI, local approval, restarting the runner,
+and checking the result.
 
-## Dokumentacja techniczna
+## Technical documentation
 
-- [Konfiguracja, usługa, logi i diagnostyka](./docs/szczegoly.md)
-- [Mechanizm zatwierdzania i instalowania modułów](./docs/wdrozenia.md)
-- [Pisanie modułów .NET](./docs/moduly.md)
-- [Szablon modułu .NET](https://github.com/zapqio/dotnet_runner_template)
+The technical guides below are in Polish:
+
+- [Configuration, Windows service, logs, and diagnostics](./docs/szczegoly.md)
+- [Module approval and installation process](./docs/wdrozenia.md)
+- [Writing .NET modules](./docs/moduly.md)
+
+A [.NET module template](https://github.com/zapqio/dotnet_runner_template) is also available.
