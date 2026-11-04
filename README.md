@@ -1,39 +1,47 @@
 # Zapqio Runner (.NET)
 
 The runner executes .NET module methods on a Windows computer or server.
-It connects to a Zapq instance over WebSocket, receives tasks, and sends back results and logs.
-It runs as a Windows service.
+It runs as a Windows service, connects to a Zapq instance and returns task
+results and logs. Install it where its modules can reach the systems they use.
 
-## Installation
+## Documentation
 
-The latest instructions, including screenshots of the web panel, are available in the Zapq documentation:
+Installation, operation, troubleshooting and module development are maintained
+in the central Zapq documentation:
 
-- [External runner installation in English](https://docs.zapq.io/guides/runners)
-- [Instalacja runnera zewnętrznego po polsku](https://docs.zapq.io/pl/guides/runners)
-- [Installation des externen Runners auf Deutsch](https://docs.zapq.io/de/guides/runners)
+| Topic | English | Polski | Deutsch |
+| --- | --- | --- | --- |
+| Install and operate a runner | [Guide](https://docs.zapq.io/guides/runners) | [Poradnik](https://docs.zapq.io/pl/guides/runners) | [Anleitung](https://docs.zapq.io/de/guides/runners) |
+| Deploy and update modules | [Guide](https://docs.zapq.io/guides/external-runner-modules) | [Poradnik](https://docs.zapq.io/pl/guides/external-runner-modules) | [Anleitung](https://docs.zapq.io/de/guides/external-runner-modules) |
+| Create .NET modules and use the NuGet contract | [Technical guide](https://docs.zapq.io/technical/dotnet-modules) | [Dokumentacja techniczna](https://docs.zapq.io/pl/technical/dotnet-modules) | [Technische Anleitung](https://docs.zapq.io/de/technical/dotnet-modules) |
 
-The guide covers .NET requirements, adding a runner in the web panel, the token,
-the instance URL, the Windows installer, and checking the connection. It also explains
-how to configure concurrent tasks, update the runner, and uninstall it.
+## Downloads and requirements
 
-The installer and program files remain available in this repository:
-
-- [Windows installer: install.ps1](./install.ps1)
 - [Releases and downloads](https://github.com/zapqio/dotnet-runner/releases)
+- [Windows installer](https://github.com/zapqio/dotnet-runner/blob/main/install.ps1)
+- [.NET module template](https://github.com/zapqio/dotnet_runner_template)
 
-## Modules
+The Windows installation needs administrator access, a compatible x64 .NET
+Desktop Runtime and the address and runner token of your Zapq instance.
+Building modules additionally needs a compatible .NET SDK. Follow the guide
+for the runtime version, installation commands and connection checks.
 
-Connecting the runner does not make any methods available until a module is deployed.
-The [external runner modules guide (in Polish)](https://docs.zapq.io/pl/guides/external-runner-modules)
-covers deployment from source code and CI, local approval, restarting the runner,
-and checking the result.
+## Module contract
 
-## Technical documentation
+`Zapqio.Runner.Module.Core` provides `IRunnerMethod`, `IRunnerInjection`,
+`JobContext` and `RunnerLog` in the `Zapqio.Runner.Core` namespace. The runner
+supplies the contract at runtime. Reference it with `ExcludeAssets="runtime"`
+in deployed modules; a standalone test host must supply its own runtime reference.
+The technical guide above includes a complete project and packaging example.
 
-The technical guides below are in Polish:
+## Working on the runner
 
-- [Configuration, Windows service, logs, and diagnostics](./docs/szczegoly.md)
-- [Module approval and installation process](./docs/wdrozenia.md)
-- [Writing .NET modules](./docs/moduly.md)
+Clone with `git clone --recurse-submodules https://github.com/zapqio/dotnet-runner.git`.
+Use the .NET SDKs and Windows targeting requirements from the project files.
+Run `dotnet test -c Release` from the repository root. The release workflow in
+`.github/workflows/release.yml` contains the supported publish commands.
+The shared protocol is maintained in [its own repository](https://github.com/zapqio/protocol).
 
-A [.NET module template](https://github.com/zapqio/dotnet_runner_template) is also available.
+The module contract package is licensed under Apache-2.0; its license text is
+in [LICENSE](https://github.com/zapqio/dotnet-runner/blob/main/Zapqio.Runner.Module.Core/LICENSE)
+and is included in the NuGet package.

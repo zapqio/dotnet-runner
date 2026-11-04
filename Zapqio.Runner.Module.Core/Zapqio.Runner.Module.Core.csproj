@@ -23,7 +23,7 @@
     <PackageProjectUrl>https://github.com/zapqio/dotnet-runner</PackageProjectUrl>
     <RepositoryUrl>https://github.com/zapqio/dotnet-runner</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
-    <PackageReadmeFile>NUGET.md</PackageReadmeFile>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
 
     <!-- Generate NuGet package on build -->
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
@@ -35,7 +35,7 @@
 
   <ItemGroup>
     <None Include="LICENSE" Pack="true" PackagePath="/" />
-    <None Include="NUGET.md" Pack="true" PackagePath="/" />
+    <None Include="../README.md" Pack="true" PackagePath="/" />
   </ItemGroup>
 
 </Project>
