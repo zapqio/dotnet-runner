@@ -101,6 +101,9 @@ secrets.json
 .env.*
 !.env.example
 
+## Python test cache
+__pycache__/
+
 ## OS files
 .DS_Store
 Thumbs.db

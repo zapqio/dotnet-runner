@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Testy instalatora runnera przed i po poprawce, 6 listopada 2026</title>
+  <style>
+    body { margin: 32px auto; padding: 0 24px; max-width: 1120px; font: 16px/1.55 system-ui, sans-serif; color: #182333; background: #fff; }
+    h1 { font-size: 28px; } h2 { margin-top: 32px; font-size: 21px; }
+    table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+    th, td { padding: 10px 12px; border: 1px solid #cfd6df; text-align: left; vertical-align: top; }
+    th { background: #e7edf4; } tbody tr:nth-child(even) { background: #f4f7fa; }
+    code, pre { font-family: Consolas, monospace; font-size: 13px; overflow-wrap: anywhere; }
+    pre { white-space: pre-wrap; padding: 16px; background: #f4f7fa; }
+    .ok { color: #176832; font-weight: 700; } .fail { color: #a42121; font-weight: 700; }
+    .lead { padding: 16px; background: #fff2d6; border-left: 4px solid #b47a00; }
+    @media print { body { margin: 0; } tr, pre { break-inside: avoid; } }
+  </style>
+</head>
+<body>
+  <h1>Testy instalatora runnera: przed i po poprawce</h1>
+  <p>Data: 6 listopada 2026. Zakres: instalator Windows, praca bez konsoli, kodowanie wyjścia, pierwsza instalacja, ponowna instalacja i uruchomienie z Harmonogramu jako SYSTEM.</p>
+  <h2>Weryfikacja poprawek 1 i 2</h2>
+  <p><strong>Poprawki są zaimplementowane lokalnie i przeszły testy.</strong> Nowy parametr <code>-Unattended</code>, komplet tokenu i adresu oraz brak interaktywnej konsoli pomijają wszystkie pytania. Brak wymaganej konfiguracji jest błędem przed pobieraniem i zmianami w usłudze. Wyjście instalatora ma jawne UTF-8, z przywróceniem kodowania sesji wywołującej.</p>
+  <p>Testowano lokalny <code>install.ps1</code> o SHA-256 <code>379159a0f37e58ed7f41804c1b81b814b5a37ea88756705cd4dcdd13869cc216</code>. Paczka runnera nadal pochodzi z publicznego wydania v0.2.5, platforma nadal z commita cf4718d6. Zmiany instalatora nie zostały opublikowane na GitHubie.</p>
+  <table><thead><tr><th>Próba po poprawce</th><th>Wynik</th></tr></thead><tbody>
+    <tr><td>16 testów regresji, Windows PowerShell 5.1</td><td class="ok">16/16 OK</td></tr>
+    <tr><td>Pełne parametry, -Unattended i host -NonInteractive przy rzeczywistej konsoli</td><td>Brak wywołań Read-Host. Konsola testowa była ukryta. Kontrolna próba interaktywna nadal odebrała pięć odpowiedzi.</td></tr>
+    <tr><td>Przekierowane wejście pozostawione otwarte, bez -NonInteractive</td><td>Brak blokowania. Niepełna konfiguracja kończy się przed pobieraniem.</td></tr>
+    <tr><td>Pierwsza instalacja, tylko adres i token oraz osobny katalog i usługa</td><td>Kod 0, 8,37 s. Brak -Language, -RunnerName, -MaxConcurrency i -Unattended. Domyślnie język polski, wygenerowana nazwa UUID, współbieżność 1, runner online.</td></tr>
+    <tr><td>Brak tokenu przy działającej usłudze</td><td>Kod 1, 0,57 s. Brak pobierania. PID i stan Running bez zmian. Plik konfiguracji niezmieniony. Po próbie odtworzono token testowej instalacji.</td></tr>
+    <tr><td>Ponowna instalacja przez -Unattended</td><td>Kod 0, 10,25 s. Zachowana konfiguracja, nazwa UUID i znaczniki w pięciu katalogach danych. Runner online.</td></tr>
+    <tr><td>Aktualizacja wcześniejszej usługi testowej</td><td>Kod 0, 10,04 s. Nadal 3 sloty i nazwa installer-user.</td></tr>
+    <tr><td>Aktualizacja z Harmonogramu jako SYSTEM</td><td>Kod 0, 10,95 s. Runner installer-system online, nadal 3 sloty.</td></tr>
+    <tr><td>Kodowanie i sesja wywołująca</td><td>Wszystkie udane instalacje: UTF-8, brak CP852, stderr 0 B, wcześniejsze kodowanie sesji przywrócone. Osobno sprawdzono UTF-8 końcowego błędu przy bezpośrednim -File oraz przywracanie po błędzie w wrapperze i pobranym scriptblocku.</td></tr>
+  </tbody></table>
+  <p>Testy regresji: <code>python tests/test_installer.py</code> z terminala administratora. Nie pobierają paczek i nie zmieniają usług. Dowody pełnych prób i surowe logi: <code>C:\Users\Łukasz\AppData\Local\Temp\codex-runner-installer-fix-20261106</code>, w szczególności <code>regression.stderr</code>, <code>e2e.stdout</code>, <code>e2e-results.json</code> i <code>system-result.json</code>. Sekrety fixture są wyłączone z raportu.</p>
+  <p>Usunięto dodatkową usługę i zadanie utworzone wyłącznie do weryfikacji poprawki. Pozostają dwie wcześniejsze usługi testowe i lokalny Zapq. Obsługa nexo oraz diagnostyka 502 pozostają poza zakresem tej zmiany.</p>
+
+  <h2>Pomiar bazowy, przed poprawkami</h2>
+  <p class="lead"><strong>Potwierdzono uwagi 6.1 i 6.2:</strong> instalator czeka na wejście mimo podania parametrów połączenia i zapisuje przekierowane wyjście w CP852. Instalacja oraz ponowna instalacja z <code>-NonInteractive</code> i jawnymi parametrami działają, również z zadania SYSTEM.</p>
+
+  <h2>Dokładne wersje i środowisko</h2>
+  <table><tbody>
+    <tr><th>Platforma Web</th><td>Osobny obraz z commita <code>cf4718d66d85a432e290c67638bf84ed2bf7ea32</code>, bez zmian w kodzie.</td></tr>
+    <tr><th>Submoduł protokołu platformy</th><td><code>023c3bc720b5adc863de80e246fe4ac985f2b26f</code>, wersja wskazana przez commit platformy.</td></tr>
+    <tr><th>Instalator GitHub main</th><td><code>3e29a2091d5887c8a3e44b2bc40aa5266fb52748</code>. Plik pobrany z adresu przypiętego do tego commita, bez modyfikacji.</td></tr>
+    <tr><th>SHA-256 instalatora</th><td><code>0e97f61cff25bd53aeb4f8abea0913baad9ff00014284af96413758f9dfc2697</code></td></tr>
+    <tr><th>Wydanie runnera</th><td><a href="https://github.com/zapqio/dotnet-runner/releases/tag/v0.2.5">v0.2.5</a>, aktualne latest w chwili testu. Instalator sam wybrał wydanie i pobrał <code>zapqio-runner-0.2.5-win-x64-net8.zip</code>. Zgłoszona wersja binarna: <code>0.2.5+16b3b19fe08387d0d8b24ac542e785003404798a</code>.</td></tr>
+    <tr><th>Host instalatora</th><td>Windows PowerShell 5.1. Procesy bez okna konsoli, stdout i stderr przechwytywane osobno jako surowe bajty. Instalacje wymagały rzeczywistego podniesienia uprawnień przez UAC.</td></tr>
+    <tr><th>Instancja testowa</th><td><a href="http://localhost:18446/installer-lab/">http://localhost:18446/installer-lab/</a>, własna baza PostgreSQL 17, projekt Docker Compose <code>zapq-installer-lab-20261106</code>. Istniejący obraz executora <code>zapqio-executor:dev</code> służy wyłącznie jako zależność środowiska. Test nie wykonywał zadań skryptowych.</td></tr>
+    <tr><th>Adres runnera</th><td><code>ws://localhost:18446/installer-lab</code>, podany przez <code>-Url</code>, bez reverse proxy i TLS. Próby pytań używały <code>-Instance</code> i nie dochodziły do połączenia z serwerem.</td></tr>
+  </tbody></table>
+
+  <h2>Wyniki</h2>
+  <table>
+    <thead><tr><th>Próba</th><th>Wynik</th><th>Obserwacja</th></tr></thead>
+    <tbody>
+      <tr><td>Bez konsoli, otwarty potok stdin, parametry Instance, Token, RunnerName, MaxConcurrency</td><td class="fail">Blokowanie</td><td>Wyświetlono wybór języka. Proces nie zakończył się przez 8 s i został przerwany przez test.</td></tr>
+      <tr><td>Jak wyżej, dodatkowo Language=pl</td><td class="fail">Blokowanie</td><td>Po komunikacie o języku proces nie zakończył się przez 8 s. Następne pytanie w tej ścieżce dotyczy katalogu instalacji.</td></tr>
+      <tr><td>Jak wyżej, dodatkowo InstallDir</td><td class="fail">Blokowanie</td><td>Proces nie zakończył się przez 8 s. Pozostaje pytanie o nazwę usługi.</td></tr>
+      <tr><td>Pierwsza instalacja, administrator, NonInteractive i jawne parametry</td><td class="ok">OK</td><td>Kod 0, 8,78 s, stderr 0 B. Usługa działa, log potwierdza WebSocket, API platformy potwierdza online i 3 sloty.</td></tr>
+      <tr><td>Ponowna instalacja v0.2.5, ścieżka aktualizacji</td><td class="ok">OK</td><td>Kod 0, 10,46 s. Nie podawano ponownie Url, Token, RunnerName ani MaxConcurrency. Konfiguracja pozostała taka sama, runner wrócił online z 3 slotami.</td></tr>
+      <tr><td>Zachowanie danych przy ponownej instalacji</td><td class="ok">OK</td><td>Porównano konfigurację JSON i sumy kontrolne znaczników w Modules, Logs, Config, Deployments i Build. Wszystkie zachowane.</td></tr>
+      <tr><td>Harmonogram, konto SYSTEM, NonInteractive, jawne parametry</td><td class="ok">OK</td><td>Potwierdzona tożsamość SYSTEM, kod procesu instalatora 0, 9,11 s, stderr 0 B. Drugi runner online, protokół 3, 3 sloty.</td></tr>
+      <tr><td>Kodowanie stdout w obu instalacjach i ponownej instalacji</td><td class="fail">CP852</td><td>Surowe bajty zawierają „Język instalacji” zakodowane w CP852, nie UTF-8. Błąd nie ogranicza się do konta SYSTEM.</td></tr>
+      <tr><td>Rejestracja usług</td><td class="ok">OK</td><td>Obie usługi Running, start Auto, konto NT SERVICE odpowiadające nazwie usługi, pliki runtime wskazują .NET 8.</td></tr>
+    </tbody>
+  </table>
+  <p>Próby blokowania używały celowo nieistniejącego numeru wydania <code>codex-probe-nonexistent-20261106</code>. Nawet gdyby odczyt wejścia niespodziewanie się zakończył, pobieranie przerwałoby test przed podmianą plików i usług. Dzięki temu można było sprawdzić pominięte parametry bez dotykania istniejącej instalacji domyślnej.</p>
+  <p>Próby instalacji używały otoczenia bez konsoli z zamkniętym stdin oraz hosta PowerShell uruchomionego z <code>-NonInteractive</code>. Tokeny przekazywano z prywatnego pliku przez wrapper PowerShell, nie umieszczano ich w raporcie.</p>
+
+  <h2>Równoważne polecenie poprawnej instalacji</h2>
+  <pre>powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\install.ps1 `
+  -Language pl `
+  -Url ws://localhost:18446/installer-lab `
+  -Token &lt;TOKEN_TESTOWEGO_RUNNERA&gt; `
+  -RunnerName installer-user `
+  -MaxConcurrency 3 `
+  -InstallDir C:\zapqio\installer-test-20261106\user `
+  -ServiceName ZapqioInstallerTest20261106</pre>
+  <p>Polecenie należy uruchomić jako administrator. <code>-NonInteractive</code> jest opcją hosta <code>powershell.exe</code>, przed <code>-File</code>.</p>
+
+  <h2>Stan pozostawiony do dalszych testów</h2>
+  <table><thead><tr><th>Element</th><th>Stan i lokalizacja</th></tr></thead><tbody>
+    <tr><td>Runner podstawowy do dalszych prób</td><td><code>ZapqioInstallerTest20261106</code>, <code>C:\zapqio\installer-test-20261106\user</code>, rekord <code>installer-user</code>.</td></tr>
+    <tr><td>Runner z próby SYSTEM</td><td><code>ZapqioInstallerSystem20261106</code>, <code>C:\zapqio\installer-test-20261106\system</code>, rekord <code>installer-system</code>.</td></tr>
+    <tr><td>Zadanie testowe</td><td><code>CodexRunnerInstallerSystem20261106</code>, jednorazowo uruchomione ręcznie, bez cyklicznego wyzwalacza.</td></tr>
+    <tr><td>Istniejący runner użytkownika</td><td><code>ZapqioRunner</code> w <code>C:\zapqio\runner</code> nadal działa. Testy instalowały wyłącznie osobne usługi i katalogi.</td></tr>
+    <tr><td>Artefakty i skrypty odtwarzające</td><td><code>C:\Users\Łukasz\AppData\Local\Temp\codex-runner-installer-20261106</code>. Plik <code>credentials.json</code> zawiera sekrety lokalnego środowiska i nie powinien być publikowany.</td></tr>
+  </tbody></table>
+  <p>Dowody: <code>metadata.json</code>, <code>prompt-results.json</code>, <code>install-user-result.json</code>, <code>install-upgrade-result.json</code>, <code>install-system-result.json</code>, <code>upgrade-preservation.json</code>, <code>system-task-result.json</code>, <code>runner-status.json</code>, <code>services.json</code> oraz surowe pliki <code>*.stdout</code> i <code>*.stderr</code>. Wszystkie poza repozytorium, w katalogu artefaktów wskazanym powyżej.</p>
+
+  <h2>Granice testu i dalsze zmiany</h2>
+  <p>Nie instalowano nexo ani innych modułów. Nie odtwarzano jeszcze błędu budowania nexo (6.3) ani zdarzenia <code>deploy approve</code> z odpowiedziami 502 (6.4). Próba aktualizacji była ponownym wdrożeniem tej samej wersji v0.2.5, nie przejściem ze starszego wydania. Nie testowano wariantu -Net10, rzeczywistej pracy interaktywnej ani instalacji w domyślnym katalogu użytkownika.</p>
+  <p>Pomiar bazowy uzasadniał poprawkę pomijania opcjonalnych pytań w automatyzacji oraz jawnego kodowania wyjścia instalatora. W pomiarze bazowym wykonano testy bez modyfikowania instalatora ani kodu platformy; wyniki późniejszej poprawki znajdują się na początku raportu. Informacja o zakończeniu zadania SYSTEM pochodzi z wyniku zapisanego przez wrapper i potwierdzenia działającej usługi; odczyt metadanych Harmonogramu z niepodniesionego procesu był niedostępny.</p>
+</body>
+</html>

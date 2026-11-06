@@ -26,6 +26,43 @@ Desktop Runtime and the address and runner token of your Zapq instance.
 Building modules additionally needs a compatible .NET SDK. Follow the guide
 for the runtime version, installation commands and connection checks.
 
+## Unattended installation
+
+Run PowerShell as administrator. Supplying `-Token` with `-Instance` or `-Url`
+automatically skips every prompt. `-Unattended` also skips prompts, including
+when updating an installation that already has its connection settings:
+
+```powershell
+.\install.ps1 -Instance test -Token $runnerToken -MaxConcurrency 3
+.\install.ps1 -Unattended -InstallDir C:\zapqio\runner -ServiceName ZapqioRunner
+```
+
+Without prompts, the default language is Polish, the directory is
+`C:\zapqio\runner` and the service name is `ZapqioRunner`. A new installation
+defaults to one concurrent job and generates a runner name on first start.
+Updates preserve existing settings unless explicitly overridden. Missing token
+or instance address causes an error before downloading or changing the service;
+settings may also come from the existing service or machine environment.
+
+Redirected input or output, an unavailable console and the PowerShell host's
+`-NonInteractive` option also disable prompts. For scheduled tasks, put the
+host option before `-File` and the installer's options after the script path:
+
+```powershell
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\install.ps1 -Unattended
+```
+
+The installer writes console output as UTF-8. If the calling PowerShell writes
+the log file, select its encoding explicitly:
+
+```powershell
+.\install.ps1 -Unattended *>&1 | Out-File -FilePath install.log -Encoding utf8
+```
+
+Calls from an existing session or wrapper restore the caller's console encoding
+on completion or failure. A dedicated `powershell.exe -File install.ps1` process
+keeps UTF-8 through the host's final error output.
+
 ## Module contract
 
 `Zapqio.Runner.Module.Core` provides `IRunnerMethod`, `IRunnerInjection`,
@@ -41,6 +78,11 @@ Use the .NET SDKs and Windows targeting requirements from the project files.
 Run `dotnet test -c Release` from the repository root. The release workflow in
 `.github/workflows/release.yml` contains the supported publish commands.
 The shared protocol is maintained in [its own repository](https://github.com/zapqio/protocol).
+
+Installer regression checks run on Windows with Python and Windows PowerShell
+5.1. From an administrator terminal, run `python tests/test_installer.py`.
+They intercept downloads and keep all fixtures in the temporary directory;
+they do not install or stop services.
 
 The module contract package is licensed under Apache-2.0; its license text is
 in [LICENSE](https://github.com/zapqio/dotnet-runner/blob/main/Zapqio.Runner.Module.Core/LICENSE)
