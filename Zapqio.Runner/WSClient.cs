@@ -1,6 +1,5 @@
 using System.Net;
 using System.Net.WebSockets;
-using System.Text;
 using System.Text.Json;
 using Zapqio.Runner.Background;
 using Zapqio.Runner.Protocol;
@@ -9,10 +8,10 @@ using Zapqio.Runner.Protocol.Enums;
 namespace Zapqio.Runner
 {
     /// <summary>
-    /// Gniazdo do platformy. Uzgodnienie i odczyt wołane są z pętli połączenia; każdy zapis idzie
-    /// przez <see cref="Outbox"/> i wykonuje go wyłącznie <see cref="OutboundSender"/> (stąd
+    /// Gniazdo do platformy. Uzgodnienie i odczyt wołane są z pętli połączenia; ruch zadań idzie
+    /// przez <see cref="Outbox"/> i <see cref="OutboundSender"/> (stąd
     /// <see cref="IOutboundTransport"/>) - <c>ClientWebSocket.SendAsync</c> nie dopuszcza dwóch
-    /// zapisów naraz, a przy kilku zadaniach piszą z kilku wątków.
+    /// zapisów naraz. Info i heartbeat mają osobną ścieżkę przez wspólną bramkę RunnerConnection.
     /// </summary>
     public class WSClient : IAsyncDisposable, IOutboundTransport
     {
@@ -42,15 +41,63 @@ namespace Zapqio.Runner
         private readonly Outbox _outbox;
         private readonly RunnerProcessState _process;
         private readonly PendingJobReturns _pending;
-        ClientWebSocket _client;
+        private ClientWebSocket _client;
+        private volatile RunnerConnection? _connection;
+        private readonly TimeProvider _time;
 
         public List<MessageMethod> Methods { get; private set; }
         public string Name { get; private set; }
 
-        public Task<WebSocketReceiveResult> ReceiveAsync(ArraySegment<byte> buffor, CancellationToken cancellationToken) => _client.ReceiveAsync(buffor, cancellationToken);
+        internal Guid ConnectionId => _connection?.Id ?? Guid.Empty;
+        internal long LastHeartbeatAcknowledgedSequence => _connection?.LastAcknowledgedSequence ?? 0;
+
+        internal bool IsCurrentConnection(Guid id) => _connection is { } connection && connection.Id == id && connection.IsAlive;
+
+        public Task<WebSocketReceiveResult> ReceiveAsync(ArraySegment<byte> buffer, CancellationToken token) =>
+            _client.ReceiveAsync(buffer, token);
+
+        internal Task<WebSocketReceiveResult> ReceiveAsync(Guid id, ArraySegment<byte> buffer, CancellationToken token)
+        {
+            var connection = _connection;
+            if (connection is null || connection.Id != id || !connection.IsAlive)
+            {
+                throw new WebSocketException("Runner session is no longer current or has expired.");
+            }
+
+            return connection.ReceiveAsync(buffer, token);
+        }
+
+        internal void AbortConnection(Guid id)
+        {
+            var connection = _connection;
+            if (connection?.Id == id)
+            {
+                connection.Abort("Connection receive loop ended");
+            }
+        }
+
+        internal bool HandleHeartbeatAck(Guid id, string? data)
+        {
+            var connection = _connection;
+            if (connection?.Id != id || string.IsNullOrWhiteSpace(data))
+            {
+                return false;
+            }
+
+            try
+            {
+                var acknowledgement = JsonSerializer.Deserialize<MessageHeartbeatAck>(data, JsonDefaults.Options);
+                return acknowledgement is not null && connection.Acknowledge(acknowledgement);
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogDebug(ex, "Ignored malformed HeartbeatAck");
+                return false;
+            }
+        }
 
         public WSClient(AppSettings settings, ILogger<WSClient> logger, MethodsProvider methodsProvider, Outbox outbox,
-            RunnerProcessState process, PendingJobReturns pending)
+            RunnerProcessState process, PendingJobReturns pending, TimeProvider? timeProvider = null)
         {
             _settings = settings ?? throw new ArgumentNullException(nameof(settings));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -58,6 +105,7 @@ namespace Zapqio.Runner
             _outbox = outbox ?? throw new ArgumentNullException(nameof(outbox));
             _process = process;
             _pending = pending;
+            _time = timeProvider ?? TimeProvider.System;
             try
             {
                 _client = new ClientWebSocket();
@@ -111,9 +159,15 @@ namespace Zapqio.Runner
         {
             try
             {
-                if (_client.State == WebSocketState.Open)
+                if (Connected())
                 {
                     return ConnectResult.Ok();
+                }
+
+                if (_connection is { } previous)
+                {
+                    await previous.DisposeAsync();
+                    _connection = null;
                 }
 
                 if (_client.State != WebSocketState.None)
@@ -128,6 +182,7 @@ namespace Zapqio.Runner
                     {
                         _logger.LogWarning(ex, "Error during cleanup before reconnection");
                     }
+
                     _client = new ClientWebSocket();
                     ConfigureClient(_client, _settings);
                 }
@@ -138,8 +193,9 @@ namespace Zapqio.Runner
                 }
 
                 var uri = new Uri($"{_settings.Url}/ws-runner");
-                var cancel = new CancellationTokenSource(10000);
+                using var cancel = new CancellationTokenSource(10000);
                 await _client.ConnectAsync(uri, cancel.Token);
+                _connection = new RunnerConnection(_client, _process.InstanceId, _time, _logger);
                 _logger.LogInformation("Successfully connected to WebSocket at {Uri}", uri);
                 return ConnectResult.Ok(established: true);
             }
@@ -186,6 +242,14 @@ namespace Zapqio.Runner
                     "Serwer ogranicza tempo uzgodnień (429){RetryAfter}",
                     retryAfter is null ? "" : $", prosi o odczekanie {retryAfter.Value.TotalSeconds:0}s");
             }
+            else if (status == HttpStatusCode.UpgradeRequired)
+            {
+                var serverVersion = _client.HttpResponseHeaders?
+                    .FirstOrDefault(header => string.Equals(header.Key, ProtocolVersion.Header, StringComparison.OrdinalIgnoreCase))
+                    .Value?.FirstOrDefault();
+                _logger.LogError("Runner protocol v{RunnerVersion} is incompatible with Web protocol {ServerVersion}. Upgrade Web and runners together.",
+                    ProtocolVersion.Current, serverVersion ?? "unknown");
+            }
             else
             {
                 _logger.LogError(ex, "Serwer odrzucił uzgadnianie ze statusem {Status}", (int)status);
@@ -219,52 +283,15 @@ namespace Zapqio.Runner
         }
 
         /// <inheritdoc/>
-        public bool IsConnected => Connected();
+        public bool IsConnected => _connection?.CanSendApplication == true;
 
         /// <summary>
-        /// Zapis jednej ramki do gniazda. Woła to wyłącznie <see cref="OutboundSender"/> - wszyscy
-        /// inni kolejkują przez <see cref="Outbox"/>, inaczej dwa zapisy naraz wywróciłyby gniazdo.
+        /// Zapis ramki z Outbox. RunnerConnection serializuje go z Info i heartbeat tej samej sesji.
         /// </summary>
-        public async Task<bool> WriteAsync(Message message)
+        public Task<bool> WriteAsync(Message message)
         {
-            try
-            {
-                if (_client.State == WebSocketState.Open)
-                {
-                    var buff = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(message, JsonDefaults.Options));
-
-                    var cancel = new CancellationTokenSource(10000);
-                    await _client.SendAsync(buff, WebSocketMessageType.Text, true, cancel.Token);
-                }
-                else
-                {
-                    _logger.LogWarning($"Cannot send message of type {message.Type}, WebSocket is not open. State: {_client.State}");
-                    //nic nie poszło w gniazdo, więc to nie jest sukces - inaczej wołający uzna, że platforma dostała wiadomość
-                    return false;
-                }
-
-                return true;
-            }
-            catch (OperationCanceledException)
-            {
-                _logger.LogWarning($"Sending message of type {message.Type} timed out");
-                return false;
-            }
-            catch (WebSocketException ex)
-            {
-                _logger.LogError(ex, $"WebSocket error while sending message of type {message.Type}");
-                return false;
-            }
-            catch (ObjectDisposedException)
-            {
-                _logger.LogError($"WebSocket was disposed while trying to send message of type {message.Type}");
-                return false;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, $"Unexpected error while sending message of type {message.Type}");
-                return false;
-            }
+            var connection = _connection;
+            return connection is null ? Task.FromResult(false) : connection.WriteAsync(message);
         }
 
         /// <summary>Odpytanie o zadanie: „mam wolne miejsce". Wyślij i zapomnij - platforma i tak sama rozsyła co obrót.</summary>
@@ -317,10 +344,16 @@ namespace Zapqio.Runner
 
         public bool Connected()
         {
-            return _client?.State == WebSocketState.Open;
+            return _connection?.IsAlive == true;
         }
         public async Task<bool> SendInfo()
         {
+            var connection = _connection;
+            if (connection is null)
+            {
+                return false;
+            }
+
             var l = new List<MessageMethod>();
             var methods = _methodsProvider.GetMethods();
             foreach (var item in methods)
@@ -358,82 +391,21 @@ namespace Zapqio.Runner
                     l.Count, string.Join(", ", l.Select(x => x.Name)), i.MaxConcurrency);
             }
 
-            return await _outbox.SendAndWaitAsync(Outbox.Frame(MessageType.Info, i)) is not null;
+            return await connection.SendInfoAsync(i);
         }
-        /// <summary>
-        /// Zamyka gniazdo uzgodnieniem - ramka Close w obie strony - żeby platforma od razu wiedziała,
-        /// że runner odszedł, zamiast czekać, aż wykryje martwe TCP. Bezpieczne przy trwającym
-        /// <see cref="ReceiveAsync"/> z pętli głównej: odpowiedź serwera odbierze ten odczyt, a to
-        /// wywołanie na nią zaczeka. Gdy gniazdo nie jest otwarte, nie robi nic.
-        /// </summary>
-        public async Task CloseAsync(CancellationToken cancellationToken)
-        {
-            var client = _client;
-            if (client is null)
-            {
-                return;
-            }
-
-            if (client.State != WebSocketState.Open && client.State != WebSocketState.CloseReceived)
-            {
-                return;
-            }
-
-            try
-            {
-                // Anulowanie w trakcie CloseAsync zrywa gniazdo (Abort) - to zamierzone: po upływie
-                // limitu i tak nie ma na co czekać.
-                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                timeout.CancelAfter(5000);
-                await client.CloseAsync(WebSocketCloseStatus.NormalClosure, "Runner stopping", timeout.Token);
-                _logger.LogInformation("WebSocket closed");
-            }
-            catch (OperationCanceledException)
-            {
-                _logger.LogWarning("Closing WebSocket timed out, aborting the connection");
-                client.Abort();
-            }
-            catch (WebSocketException ex)
-            {
-                _logger.LogWarning(ex, "WebSocket error while closing, aborting the connection");
-                client.Abort();
-            }
-            catch (ObjectDisposedException)
-            {
-                _logger.LogDebug("WebSocket was already disposed");
-            }
-            catch (InvalidOperationException ex)
-            {
-                // Drugie równoległe zamykanie tego samego gniazda - pierwsze je dokończy.
-                _logger.LogDebug(ex, "WebSocket close already in progress");
-            }
-        }
+        /// <summary>Stops heartbeat and closes the captured session through its send gate.</summary>
+        public Task CloseAsync(CancellationToken cancellationToken) =>
+            _connection?.CloseAsync(cancellationToken) ?? Task.CompletedTask;
 
         public async ValueTask DisposeAsync()
         {
-            try
+            if (_connection is { } connection)
             {
-                await CloseAsync(CancellationToken.None);
-                _client?.Dispose();
+                await connection.CloseAsync(CancellationToken.None);
+                await connection.DisposeAsync();
             }
-            catch (ObjectDisposedException)
-            {
-                // Already disposed, nothing to do
-                _logger.LogDebug("WebSocket was already disposed");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Unexpected error during WebSocket disposal");
-                try
-                {
-                    _client?.Abort();
-                    _client?.Dispose();
-                }
-                catch
-                {
-                    // Best effort cleanup
-                }
-            }
+
+            _client.Dispose();
         }
     }
 }

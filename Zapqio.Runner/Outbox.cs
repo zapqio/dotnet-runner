@@ -30,8 +30,8 @@ namespace Zapqio.Runner
     }
 
     /// <summary>
-    /// Kolejka wyjściowa runnera. Wszystko, co idzie do platformy - potwierdzenia, logi, wyniki,
-    /// odpytania, <c>Info</c> - przechodzi tędy, a zapisuje wyłącznie <see cref="Background.OutboundSender"/>:
+    /// Kolejka ruchu zadań: potwierdzenia, logi, wyniki i odpytania. Drenuje ją
+    /// <see cref="Background.OutboundSender"/>. Info i heartbeat korzystają bezpośrednio z bramki sesji:
     /// <c>ClientWebSocket.SendAsync</c> nie dopuszcza dwóch zapisów naraz, a przy kilku zadaniach
     /// naraz piszą z kilku wątków. FIFO gwarantuje kolejność w obrębie zadania (potwierdzenie, log
     /// startowy, linie, wynik) bez blokad w kodzie metod.

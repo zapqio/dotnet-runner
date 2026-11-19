@@ -1,5 +1,4 @@
 using System.Net.WebSockets;
-using System.Text;
 using System.Text.Json;
 using Zapqio.Runner.Protocol;
 using Zapqio.Runner.Protocol.Enums;
@@ -22,7 +21,6 @@ namespace Zapqio.Runner.Background
         private readonly OutboundSender _sender;
         private readonly AppSettings _settings;
         private readonly Deployments.DeploymentCoordinator? _deployments;
-        private bool _runMethodFirstConnected = false;
 
         /// <summary>Ustawiane w <see cref="StopAsync"/>, zanim host anuluje pętlę - żeby po zamknięciu gniazda nie próbowała się łączyć na nowo.</summary>
         private volatile bool _stopping = false;
@@ -65,8 +63,8 @@ namespace Zapqio.Runner.Background
         /// Łagodne zatrzymanie, w tej kolejności: nic nowego nie rusza; trwające zadania kończą się
         /// (do <c>StopTimeoutSeconds</c>); ich wyniki i logi wychodzą z kolejki; dopiero potem
         /// uzgodnienie zamknięcia gniazda i anulowanie pętli. Zadania, które czekały w kolejce
-        /// planisty, przepadają - są w <c>Dispatched</c>, więc platforma zwróci je do kolejki, gdy
-        /// zobaczy zamknięte gniazdo.
+        /// planisty, przepadają wraz z procesem. Platforma rozstrzyga je zgodnie ze stanem przyjęcia
+        /// próby; samo zamknięcie gniazda nie dowodzi niewykonania pracy.
         ///
         /// Uzgodnienie zamknięcia idzie przed anulowaniem pętli. Anulowanie trwającego ReceiveAsync
         /// zrywa gniazdo bez ramki Close (stan Aborted), przez co DisposeAsync klienta nie ma już
@@ -129,6 +127,7 @@ namespace Zapqio.Runner.Background
 
             while (!stoppingToken.IsCancellationRequested && !_stopping)
             {
+                var connectionId = Guid.Empty;
                 try
                 {
                     var connect = await _client.Connect();
@@ -140,86 +139,19 @@ namespace Zapqio.Runner.Background
                     }
 
                     _failedConnects = 0;
-                    if (connect.Established)
+                    connectionId = _client.ConnectionId;
+                    if (!await _client.SendInfo())
                     {
-                        _runMethodFirstConnected = false;
+                        throw new WebSocketException("Info could not be sent for the current session.");
                     }
 
-                    await FirstConnectedAsync();
-                    if (!_runMethodFirstConnected)
+                    _deployments?.Connected();
+                    await RunConnectedAsync(connectionId, stoppingToken);
+                    _deployments?.Disconnected();
+                    if (!_stopping)
                     {
-                        await _client.CloseAsync(stoppingToken);
-                        continue;
+                        await DelayBeforeReconnectAsync(WSClient.ConnectResult.Failed(), stoppingToken);
                     }
-
-                    // Tylko po faktycznym powrocie: Connect() w zwykłym obrocie pętli zastaje gniazdo
-                    // otwarte i nic nie nawiązuje, a wynik wysłany chwilę temu nie jest do ponowienia.
-                    if (connect.Established)
-                    {
-                        _deployments?.Connected();
-                        await ResendPendingResultsAsync();
-
-                        // Runner po powrocie ma wolne sloty - zgłasza gotowość od razu, zamiast czekać
-                        // na najbliższy obrót dyspozytora po stronie platformy.
-                        if (_scheduler.FreeSlots > 0)
-                        {
-                            await _client.SendQueryOnJob();
-                        }
-                    }
-
-                    WebSocketReceiveResult result;
-                    using var ms = new MemoryStream();
-                    var buff = new byte[1024];
-                    do
-                    {
-                        result = await _client.ReceiveAsync(buff, stoppingToken);
-                        if (ms.Length + result.Count > _settings.MaxWebSocketMessageBytes)
-                        {
-                            await _client.CloseAsync(stoppingToken);
-                            throw new InvalidDataException($"WebSocket message exceeds {_settings.MaxWebSocketMessageBytes} bytes.");
-                        }
-
-                        ms.Write(buff, 0, result.Count);
-                    } while (!result.EndOfMessage);
-
-                    if (result.MessageType == WebSocketMessageType.Close)
-                    {
-                        // Ramka Close - albo odpowiedź na nasze zamknięcie (wtedy CloseAsync klienta
-                        // już nie ma nic do zrobienia), albo serwer zamyka pierwszy: dopowiadamy
-                        // uzgodnienie, a kolejny obrót pętli łączy się na nowo.
-                        if (_stopping)
-                        {
-                            _logger.LogDebug("Platforma potwierdziła zamknięcie ({Status})", result.CloseStatus);
-                        }
-                        else
-                        {
-                            _logger.LogInformation(
-                                                            "Platforma zamknęła połączenie ({Status}: {Description})",
-                                                            result.CloseStatus, result.CloseStatusDescription);
-                        }
-
-                        await _client.CloseAsync(stoppingToken);
-                        continue;
-                    }
-
-                    ms.Position = 0;
-                    var json = Encoding.UTF8.GetString(ms.ToArray());
-                    var message = JsonSerializer.Deserialize<Message>(json, JsonDefaults.Options);
-
-                    // Cokolwiek przyszło od platformy dowodzi, że połączenie żyło po wysyłkach o
-                    // niższym numerze sekwencji - te wyniki nie są już do ponawiania (patrz PendingJobReturns).
-                    // Deployment ACKs/notices do not acknowledge job results.
-                    if (message?.Type == MessageType.Job)
-                    {
-                        _pending.Confirm(_outbox.NextSeq());
-                    }
-
-                    if (message != null)
-                    {
-                        Handle(message);
-                    }
-
-                    _loopErrors = 0;
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {
@@ -227,14 +159,127 @@ namespace Zapqio.Runner.Background
                 }
                 catch (Exception e) when (_stopping)
                 {
-                    // Gniazdo zamknięte przez StopAsync w trakcie odczytu - to nie jest błąd pętli.
                     _logger.LogDebug(e, "Main loop interrupted by shutdown");
                     return;
                 }
                 catch (Exception e)
                 {
+                    _client.AbortConnection(connectionId);
+                    _deployments?.Disconnected();
                     _logger.LogError(e, "Main loop");
                     await DelayAfterLoopErrorAsync(stoppingToken);
+                }
+            }
+        }
+
+        private async Task RunConnectedAsync(Guid connectionId, CancellationToken stoppingToken)
+        {
+            using var sessionStop = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+            using var deploymentMessages = new DeploymentMessageQueue();
+            // Journal locks must never hold up socket reads and heartbeat acknowledgements.
+            var processing = Task.Run(() => ProcessDeploymentsAsync(deploymentMessages, sessionStop.Token), sessionStop.Token);
+            // Receiving ACKs must continue even while a large set of old results is replayed.
+            var receiving = ReceiveMessagesAsync(connectionId, deploymentMessages, sessionStop.Token);
+            var replaying = ResendPendingResultsAsync(connectionId, sessionStop.Token);
+            try
+            {
+                if (_scheduler.FreeSlots > 0)
+                {
+                    await _client.SendQueryOnJob();
+                }
+
+                var firstCompleted = await Task.WhenAny(receiving, replaying, processing);
+                await firstCompleted;
+                // Once replay finishes, still observe a failed deployment worker immediately.
+                firstCompleted = await Task.WhenAny(receiving, processing);
+                await firstCompleted;
+            }
+            finally
+            {
+                sessionStop.Cancel();
+                deploymentMessages.Complete();
+                try
+                {
+                    await Task.WhenAll(receiving, replaying, processing);
+                }
+                catch (Exception e)
+                {
+                    _logger.LogDebug(e, "Session tasks finished after disconnect");
+                }
+            }
+        }
+
+        private async Task ProcessDeploymentsAsync(DeploymentMessageQueue messages, CancellationToken token)
+        {
+            while (await messages.ReadAsync(token) is { } message)
+            {
+                token.ThrowIfCancellationRequested();
+                try
+                {
+                    _deployments?.Handle(message);
+                }
+                catch (JsonException e)
+                {
+                    _logger.LogWarning(e, "Ignored malformed deployment message");
+                }
+            }
+        }
+
+        private async Task ReceiveMessagesAsync(Guid connectionId, DeploymentMessageQueue deploymentMessages, CancellationToken token)
+        {
+            var buffer = new byte[8192];
+            while (!token.IsCancellationRequested)
+            {
+                using var data = new MemoryStream();
+                WebSocketReceiveResult frame;
+                do
+                {
+                    frame = await _client.ReceiveAsync(connectionId, buffer, token);
+                    if (frame.MessageType == WebSocketMessageType.Close)
+                    {
+                        await _client.CloseAsync(token);
+                        return;
+                    }
+
+                    if (data.Length + frame.Count > _settings.MaxWebSocketMessageBytes)
+                    {
+                        throw new InvalidDataException($"WebSocket message exceeds {_settings.MaxWebSocketMessageBytes} bytes.");
+                    }
+
+                    data.Write(buffer, 0, frame.Count);
+                }
+                while (!frame.EndOfMessage);
+
+                if (!_client.IsCurrentConnection(connectionId))
+                {
+                    throw new WebSocketException("Received a message after the session expired.");
+                }
+
+                if (frame.MessageType != WebSocketMessageType.Text)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var message = JsonSerializer.Deserialize<Message>(data.ToArray(), JsonDefaults.Options);
+                    if (message is null)
+                    {
+                        continue;
+                    }
+
+                    // Heartbeat and deployment acknowledgements never confirm a job result.
+                    if (message.Type == MessageType.Job)
+                    {
+                        _pending.Confirm(_outbox.NextSeq());
+                    }
+
+                    Handle(message, connectionId, deploymentMessages);
+                    _loopErrors = 0;
+                }
+                catch (JsonException e)
+                {
+                    _logger.LogWarning(e, "Ignored malformed runner protocol message");
                 }
             }
         }
@@ -291,22 +336,12 @@ namespace Zapqio.Runner.Background
             });
         }
 
-        private async Task FirstConnectedAsync()
-        {
-            if (_runMethodFirstConnected)
-            {
-                return;
-            }
-
-            _runMethodFirstConnected = await _client.SendInfo();
-        }
-
         /// <summary>
         /// Wyniki, które nie doszły (albo nie wiadomo, czy doszły), idą zaraz po nawiązaniu
-        /// połączenia, przed odczytem czegokolwiek - każdy z tym samym <c>attemptId</c>, żeby platforma
+        /// połączenia, równolegle z odbiorem ACK. Każdy ma ten sam <c>attemptId</c>, żeby platforma
         /// rozpoznała próbę (§5.5 protokołu). Nieudana wysyłka zostawia wynik na następne połączenie.
         /// </summary>
-        private async Task ResendPendingResultsAsync()
+        private async Task ResendPendingResultsAsync(Guid connectionId, CancellationToken token)
         {
             var pending = _pending.PeekAll();
             if (pending.Count == 0)
@@ -316,11 +351,17 @@ namespace Zapqio.Runner.Background
 
             foreach (var result in pending)
             {
+                token.ThrowIfCancellationRequested();
+                if (!_client.IsCurrentConnection(connectionId))
+                {
+                    return;
+                }
+
                 _logger.LogInformation(
                     "Ponawiam JobReturn ({Status}) zadania {JobId}, próba {AttemptId}, po ponownym połączeniu",
                     result.Status, result.Id, result.AttemptId);
 
-                var sentSeq = await _client.SendJobReturn(result.Id, result.AttemptId, result.Status, result.Data, result.ExecutionVersion);
+                var sentSeq = await _client.SendJobReturn(result.Id, result.AttemptId, result.Status, result.Data, result.ExecutionVersion).WaitAsync(token);
                 if (sentSeq is null)
                 {
                     _logger.LogWarning("Ponowienie JobReturn zadania {JobId} nie powiodło się - zostaje na kolejne połączenie", result.Id);
@@ -330,17 +371,24 @@ namespace Zapqio.Runner.Background
                 _pending.MarkSent(result, sentSeq.Value);
             }
         }
-        private void Handle(Message message)
+        private void Handle(Message message, Guid connectionId, DeploymentMessageQueue deploymentMessages)
         {
             switch (message.Type)
             {
+                case MessageType.HeartbeatAck:
+                    _client.HandleHeartbeatAck(connectionId, message.Data);
+                    break;
                 case MessageType.Job:
                     HandleJob(message);
                     break;
                 case MessageType.Deployment:
                 case MessageType.DeploymentApprovalResult:
                 case MessageType.DeploymentStatusAck:
-                    _deployments?.Handle(message);
+                    if (_deployments is not null)
+                    {
+                        deploymentMessages.Write(message);
+                    }
+
                     break;
                 default:
                     break;

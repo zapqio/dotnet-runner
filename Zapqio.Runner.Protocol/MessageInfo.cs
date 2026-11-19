@@ -7,10 +7,10 @@ namespace Zapqio.Runner.Protocol
         public const string ProcessInstanceHeader = "X-Zapqio-Process-Instance";
         public List<MessageMethod> Methods { get; set; }
         public string Name { get; set; }
-        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-        public Guid? ProcessInstanceId { get; set; }
-        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-        public List<Guid>? ActiveAttemptIds { get; set; }
+        [JsonRequired]
+        public Guid ProcessInstanceId { get; set; }
+        [JsonRequired]
+        public List<Guid> ActiveAttemptIds { get; set; } = [];
 
         /// <summary>
         /// Pojemność runnera: ile zadań wykonuje naraz, a więc ile nierozstrzygniętych zadań Web może

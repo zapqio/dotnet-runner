@@ -24,6 +24,8 @@ public class FixtureProductionTests
         var frame = Wire.Frame(MessageType.Info, new MessageInfo
         {
             Name = "build-agent-01",
+            ProcessInstanceId = Guid.Parse("8dbe4462-6baf-4a07-91f6-8aa2753a27e1"),
+            ActiveAttemptIds = [],
             MaxConcurrency = 4,
             Methods =
             [

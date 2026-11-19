@@ -75,7 +75,7 @@ namespace Zapqio.Runner
             builder.Services.AddSerilog((services, log) =>
                 RunnerLogging.Configure(log, services.GetRequiredService<AppSettings>().Logger, originalConsoleOut));
 
-            // Kolejka wyjściowa i jej jedyny autor. Wszystko, co idzie do platformy, przechodzi tędy.
+            // Kolejka ruchu zadań. Info i heartbeat współdzielą z nią bramkę wysyłania sesji.
             builder.Services.AddSingleton(sp => new Outbox(sp.GetRequiredService<AppSettings>().MaxQueuedLogLines));
 
             // Wszystkie trzy kanały modułu (stdout/stderr, RunnerLog, wstrzyknięty ILogger) schodzą się
@@ -87,6 +87,7 @@ namespace Zapqio.Runner
             builder.Services.AddSingleton(services => new Deployments.DeploymentStore(
                 Path.Combine(AppContext.BaseDirectory, "Deployments"), services.GetRequiredService<ILogger<Deployments.DeploymentStore>>()));
             builder.Services.AddSingleton<Deployments.DeploymentCoordinator>();
+            builder.Services.AddSingleton(TimeProvider.System);
             builder.Services.AddSingleton<WSClient>();
             builder.Services.AddSingleton<RunnerProcessState>();
             builder.Services.AddSingleton<IOutboundTransport>(sp => sp.GetRequiredService<WSClient>());

@@ -12,6 +12,8 @@ namespace Zapqio.Runner.Protocol.Enums
         DeploymentApproval,
         DeploymentApprovalResult,
         DeploymentStatus,
-        DeploymentStatusAck
+        DeploymentStatusAck,
+        Heartbeat,
+        HeartbeatAck
     }
 }

@@ -17,6 +17,8 @@ public class SchemaConformanceTests
     private static string PayloadDef(string type) => type switch
     {
         "Info" => "messageInfo",
+        "Heartbeat" => "messageHeartbeat",
+        "HeartbeatAck" => "messageHeartbeatAck",
         "Deployment" => "deploymentNotice",
         "DeploymentApproval" => "deploymentApproval",
         "DeploymentApprovalResult" => "deploymentApprovalResult",
@@ -37,6 +39,8 @@ public class SchemaConformanceTests
             Wire.Frame(MessageType.Info, new MessageInfo
             {
                 Name = "build-agent-01",
+                ProcessInstanceId = Guid.Parse("8dbe4462-6baf-4a07-91f6-8aa2753a27e1"),
+                ActiveAttemptIds = [],
                 Methods =
                 [
                     new MessageMethod

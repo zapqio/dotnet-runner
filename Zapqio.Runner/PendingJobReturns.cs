@@ -18,6 +18,7 @@ namespace Zapqio.Runner
     /// sekwencji odebranej wiadomości) potwierdza wyłącznie wyniki wysłane przed nim - numeracja jest
     /// wspólna z zapisami nadawcy (<see cref="Outbox.NextSeq"/>). Restart procesu gubi wpisy (wyniki
     /// nie są zapisywane na dysk - decyzja z MU3, do zmiany, gdy zajdzie potrzeba).
+    /// HeartbeatAck potwierdza wyłącznie puls. Nie wolno wywoływać Confirm na jego podstawie.
     /// </summary>
     public sealed class PendingJobReturns
     {
