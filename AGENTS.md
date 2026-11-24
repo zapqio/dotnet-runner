@@ -15,3 +15,11 @@
 ## Plans
 
 - Keep implementation plans and AI analyses in the `ai_analysis/` directory, not in the repository root.
+
+## Local secrets and security checks
+
+- Use only local/test credentials. Keep values out of commands, tool arguments, transcripts, reports and tracked files. Read them from the process environment, .NET User Secrets, or ignored local files without printing them.
+- In PowerShell, use `$env:NAME` for environment variables. Do not expand secrets into a child process command line; use its environment, standard input or protected configuration files.
+- Run `scripts/security/Install-Gitleaks.ps1 -InstallHooks` when preparing a checkout. Never bypass hooks or disable scanner rules to make a commit pass. Missing tools and failed scans must stop the operation.
+- Run `scripts/security/Scan-Secrets.ps1 -Mode WorkingTree` before proposing a commit. Investigate findings without displaying secret values. Test-only exceptions must be narrow and reviewed.
+- Local analysis files belong in ignored `ai_analysis/`. These rules govern development and agent work; preserve the end-user installer token input interface and documented token placeholders.

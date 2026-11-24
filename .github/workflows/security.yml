@@ -1,0 +1,33 @@
+name: Secret scanning
+
+on:
+  push:
+    branches-ignore: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  secret_scan:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install verified Gitleaks
+        shell: pwsh
+        run: ./scripts/security/Install-Gitleaks.ps1
+      - name: Test secret detection and redaction
+        shell: pwsh
+        run: |
+          ./scripts/security/Test-SecretRules.ps1
+          ./scripts/security/Test-SecretHooks.ps1
+      - name: Scan working tree and introduced commits
+        shell: pwsh
+        env:
+          SCAN_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          SCAN_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: ./scripts/security/Scan-Secrets.ps1 -Mode CI -BaseCommit $env:SCAN_BASE -DefaultBranch $env:SCAN_DEFAULT_BRANCH
