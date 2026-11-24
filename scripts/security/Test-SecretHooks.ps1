@@ -136,3 +136,6 @@ finally {
 
     Remove-Item -LiteralPath $resolved -Recurse -Force
 }
+
+# Expected rejections leave LASTEXITCODE set to 1. Report success only after cleanup.
+exit 0
