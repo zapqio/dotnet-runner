@@ -1,0 +1,133 @@
+title = "Zapq secret detection"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "zapq-connection-password"
+description = "Literal password in a database connection string"
+regex = '''(?i)[;"']\s*(?:password|pwd)\s*=\s*["']?([^;\s"'$<>`{}]+)'''
+secretGroup = 1
+
+[[rules.allowlists]]
+description = "Reviewed synthetic values used by isolated tests"
+condition = "AND"
+paths = ['''Zapqio\.Platform\.Tests/Unit/Scripting/ScriptEngineJavaScriptTests\.cs$''']
+regexes = ['''^(?:sekret)$''']
+
+[[rules.allowlists]]
+description = "Reviewed synthetic values used by isolated tests"
+condition = "AND"
+paths = ['''Zapqio\.Platform\.Tests/Unit/Scripting/LaunchSpecFactoryTests\.cs$''']
+regexes = ['''^(?:secret)$''']
+
+[[rules.allowlists]]
+description = "Reviewed synthetic values used by isolated tests"
+condition = "AND"
+paths = ['''Zapqio\.Platform\.Tests/Unit/Scripting/ScriptEngineTests\.cs$''']
+regexes = ['''^(?:sekret)$''']
+
+[[rules]]
+id = "zapq-environment-password"
+description = "Literal password assigned to a command environment variable"
+regex = '''(?i)\b(?:PGPASSWORD|MYSQL_PWD|SQLCMDPASSWORD|ZAPQIO_DB_PASSWORD)\b["']?\s*[:=]\s*["']?([^\s"'$<>`{};]+)'''
+secretGroup = 1
+
+[[rules]]
+id = "zapq-application-secret"
+description = "Literal Zapq encryption key or authentication token"
+regex = '''(?i)\b(?:ZAPQIO_(?:SECRET_KEY|TOKEN|PASSWORD_RESET_API_KEY|SUPPORT_INSTANCE_KEY|LICENSE_ACK_KEY)|Token)\b["']?\s*[:=]\s*["']([a-z0-9+/=_-]{16,})["']'''
+secretGroup = 1
+
+[[rules.allowlists]]
+description = "Instructional token placeholder in the API request example"
+condition = "AND"
+paths = ['''Zapqio\.Platform\.Web/Documentation/Controllers/GitAccessTokens\.json$''']
+regexes = ['''^replace-with-your-token$''']
+
+[[rules.allowlists]]
+description = "Reviewed synthetic values used by isolated tests"
+condition = "AND"
+paths = ['''Zapqio\.Platform\.Tests/Integration/DashboardQueryTests\.cs$''']
+regexes = ['''^(?:never\-return\-this\-token)$''']
+
+[[rules.allowlists]]
+description = "Reviewed synthetic values used by isolated tests"
+condition = "AND"
+paths = ['''Zapqio\.Platform\.Tests/Integration/GettingStartedTests\.cs$''']
+regexes = ['''^(?:private\-runner\-token)$''']
+
+[[rules.allowlists]]
+description = "Reviewed synthetic values used by isolated tests"
+condition = "AND"
+paths = ['''Zapqio\.Platform\.Tests/Integration/GitAccessTokensApiTests\.cs$''']
+regexes = ['''^(?:duplicate\-secret|must\-not\-be\-stored|sensitive\-marker)$''']
+
+[[rules.allowlists]]
+description = "Reviewed synthetic values used by isolated tests"
+condition = "AND"
+paths = ['''Zapqio\.Platform\.Tests/Unit/PasswordReset/PasswordResetSecurityTests\.cs$''']
+regexes = ['''^(?:AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8)$''']
+
+[[rules.allowlists]]
+description = "Reviewed synthetic values used by isolated tests"
+condition = "AND"
+paths = ['''Zapqio\.Platform\.Tests/Unit/PasswordReset/PasswordResetContractTests\.cs$''']
+regexes = ['''^(?:AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8)$''']
+
+[[rules]]
+id = "zapq-cli-secret"
+description = "Literal secret passed as a command argument"
+regex = '''(?i)(?:^|\s)(?:(?:--(?:password|token|api-key)|-(?:Token|Password))(?:\s+|[=:])|(?-i:-P)\s+)\s*["']?([a-z0-9][a-z0-9!@#%&*+/=_.:-]{5,})'''
+secretGroup = 1
+
+[[rules]]
+id = "zapq-uri-password"
+description = "Literal password in a database URI"
+regex = '''(?i)\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?)://[^\s/:@]+:([^\s/@"'$<>`{}]+)@'''
+secretGroup = 1
+
+[[rules]]
+id = "zapq-unquoted-application-secret"
+description = "Unquoted Zapq key or token in YAML or environment configuration"
+regex = '''(?i)\bZAPQIO_(?:SECRET_KEY|TOKEN|PASSWORD_RESET_API_KEY|SUPPORT_INSTANCE_KEY|LICENSE_ACK_KEY)\b["']?\s*[:=]\s*([a-z0-9+/=_-]{16,})(?:\s|$|[,;}])'''
+secretGroup = 1
+
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "Database identifiers in retained security test evidence"
+condition = "AND"
+paths = ['''Zapqio\.Platform\.Tests/Security/Reports/''']
+regexes = ['''^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$''']
+
+[[rules.allowlists]]
+description = "Deterministic test vector"
+condition = "AND"
+paths = ['''Zapqio\.Platform\.Tests/Unit/PasswordReset/PasswordResetOptionsTests\.cs$''']
+regexes = ['''^zqpr_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8$''']
+
+[[rules.allowlists]]
+description = "Deterministic test vector"
+condition = "AND"
+paths = ['''Zapqio\.Platform\.Tests/Unit/WebhookSignatureTests\.cs$''']
+regexes = ['''^377ea86609b0d322dac776ed1151b9c3e797a55a9f94c7482568315c2599ae0c$''']
+
+[[rules.allowlists]]
+description = "Deterministic password-reset protocol test vector"
+condition = "AND"
+paths = ['''Zapqio\.Platform\.Tests/Unit/PasswordReset/PasswordResetSecurityTests\.cs$''']
+regexes = ['''^(?:AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8)$''']
+
+[[rules.allowlists]]
+description = "Deterministic password-reset protocol test vector"
+condition = "AND"
+paths = ['''Zapqio\.Platform\.Tests/Unit/PasswordReset/PasswordResetContractTests\.cs$''']
+regexes = ['''^(?:AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8)$''']
+
+[[rules.allowlists]]
+description = "Exact UI text entered and read back during offline recovery tests"
+condition = "AND"
+paths = ['''Zapqio\.Platform\.Tests/Security/Reports/2026-11-20/ui-quality-20261120T073617Z-test4\.(json|html)$''']
+regexes = ['''^(?:20261120T073617Z\-test4)$''']

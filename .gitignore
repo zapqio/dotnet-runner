@@ -111,3 +111,16 @@ ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
 *~
+
+## Local agent permissions, transcripts and credentials
+/.local/
+/ai_analysis/
+/.claude/settings.local.json
+/.codex/auth.json
+/.codex/history.jsonl
+/.codex/sessions/
+/.codex/archived_sessions/
+/CLAUDE.local.md
+/AGENTS.local.md
+/review_comment.md
+*.secrets.json

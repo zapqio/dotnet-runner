@@ -5,7 +5,6 @@
       "environmentVariables": {
         "DOTNET_ENVIRONMENT": "Development",
         "ZAPQIO_URL": "ws://localhost:8080/hdwr-demo",
-        "ZAPQIO_TOKEN": "c91744fb849a488e891c26cce57f26c3",
         "ZAPQIO_NAME": "Mega"
       },
       "dotnetRunMessages": true

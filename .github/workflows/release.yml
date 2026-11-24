@@ -29,7 +29,13 @@ permissions:
   contents: write
 
 jobs:
+  security:
+    uses: ./.github/workflows/security.yml
+    permissions:
+      contents: read
+
   release:
+    needs: security
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
